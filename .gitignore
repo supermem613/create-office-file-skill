@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.log
+npm-debug.log*
+
+# Generated test output
+test-output.*
+EVAL_TEST_*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Eval results (generated)
+evals/results/

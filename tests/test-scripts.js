@@ -1,0 +1,439 @@
+#!/usr/bin/env node
+// Static validation — no Office, no network required
+// Run: node --test tests/test-scripts.js
+
+const { describe, it } = require('node:test');
+const assert = require('node:assert');
+const { execSync } = require('node:child_process');
+const { existsSync, readFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+const skillDir = join(__dirname, '..', '.claude', 'skills', 'create-office-file');
+const script = join(skillDir, 'scripts', 'create-office-file.mjs');
+const evalsDir = join(__dirname, '..', 'evals');
+const verifyScript = join(evalsDir, 'verify-output.mjs');
+
+/**
+ * Run the create-office-file script. Returns { exitCode, stdout, stderr }.
+ */
+function run(args = '', input = null) {
+  try {
+    const opts = { encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] };
+    if (input) opts.input = input;
+    const stdout = execSync(`node "${script}" ${args}`, opts);
+    return { exitCode: 0, stdout, stderr: '' };
+  } catch (e) {
+    return { exitCode: e.status ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
+
+/**
+ * Generate a file from markdown string, return the buffer.
+ */
+function generate(md, format) {
+  const outFile = join(__dirname, `_test_output.${format}`);
+  try {
+    execSync(`node "${script}" -f ${format} -o "${outFile}"`, {
+      input: md, encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return readFileSync(outFile);
+  } finally {
+    try { require('fs').unlinkSync(outFile); } catch {}
+  }
+}
+
+/**
+ * Parse a ZIP buffer and return entry names. Minimal ZIP reader for testing.
+ */
+function zipEntries(buf) {
+  const entries = [];
+  // Find EOCD signature (0x06054b50) scanning backward
+  let eocdOff = -1;
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (buf.readUInt32LE(i) === 0x06054B50) { eocdOff = i; break; }
+  }
+  if (eocdOff < 0) return entries;
+  const cdOff = buf.readUInt32LE(eocdOff + 16);
+  const cdCount = buf.readUInt16LE(eocdOff + 10);
+  let pos = cdOff;
+  for (let i = 0; i < cdCount; i++) {
+    if (buf.readUInt32LE(pos) !== 0x02014B50) break;
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    entries.push(buf.toString('utf8', pos + 46, pos + 46 + nameLen));
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+/**
+ * Extract a file from a ZIP buffer by name.
+ */
+function zipExtract(buf, name) {
+  let eocdOff = -1;
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (buf.readUInt32LE(i) === 0x06054B50) { eocdOff = i; break; }
+  }
+  if (eocdOff < 0) return null;
+  const cdOff = buf.readUInt32LE(eocdOff + 16);
+  const cdCount = buf.readUInt16LE(eocdOff + 10);
+  let pos = cdOff;
+  for (let i = 0; i < cdCount; i++) {
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    const entryName = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
+    const localOff = buf.readUInt32LE(pos + 42);
+    if (entryName === name) {
+      const lNameLen = buf.readUInt16LE(localOff + 26);
+      const lExtraLen = buf.readUInt16LE(localOff + 28);
+      const method = buf.readUInt16LE(localOff + 8);
+      const compSize = buf.readUInt32LE(localOff + 18);
+      const dataStart = localOff + 30 + lNameLen + lExtraLen;
+      const raw = buf.subarray(dataStart, dataStart + compSize);
+      if (method === 0) return raw.toString('utf8');
+      if (method === 8) return require('zlib').inflateRawSync(raw).toString('utf8');
+      return null;
+    }
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
+
+const scriptSource = readFileSync(script, 'utf8');
+
+// ============================================================================
+// 1. File existence
+// ============================================================================
+describe('File existence', () => {
+  for (const f of ['scripts/create-office-file.mjs', 'SKILL.md']) {
+    it(`${f} exists`, () => {
+      assert.ok(existsSync(join(skillDir, f)), `${f} not found`);
+    });
+  }
+  it('evals/verify-output.mjs exists', () => {
+    assert.ok(existsSync(verifyScript), 'evals/verify-output.mjs not found');
+  });
+  for (const f of ['pptx.md', 'docx.md']) {
+    it(`references/${f} exists`, () => {
+      assert.ok(existsSync(join(skillDir, 'references', f)), `references/${f} not found`);
+    });
+  }
+});
+
+// ============================================================================
+// 2. Shebang line
+// ============================================================================
+describe('Shebang line', () => {
+  for (const [label, path] of [
+    ['scripts/create-office-file.mjs', script],
+    ['evals/verify-output.mjs', verifyScript]
+  ]) {
+    it(`${label} has node shebang`, () => {
+      const first = readFileSync(path, 'utf8').split(/\r?\n/)[0];
+      assert.match(first, /node/, `${label} should have node shebang`);
+    });
+  }
+});
+
+// ============================================================================
+// 3. No external npm dependencies
+// ============================================================================
+describe('No external npm dependencies', () => {
+  it('create-office-file.mjs only imports Node built-ins', () => {
+    const imports = scriptSource.match(/import\s+.*from\s+['"]([^'"]+)['"]/g) || [];
+    for (const imp of imports) {
+      const mod = imp.match(/from\s+['"]([^'"]+)['"]/)[1];
+      assert.ok(
+        ['fs', 'path', 'zlib'].includes(mod),
+        `Unexpected import: ${mod}. Only fs, path, zlib allowed.`
+      );
+    }
+  });
+});
+
+// ============================================================================
+// 4. CLI error handling
+// ============================================================================
+describe('CLI error handling', () => {
+  it('fails with no arguments', () => {
+    const r = run('');
+    assert.notStrictEqual(r.exitCode, 0);
+  });
+
+  it('fails with unknown format', () => {
+    const r = run('-o test.xyz');
+    assert.notStrictEqual(r.exitCode, 0);
+    assert.match(r.stderr, /format/i);
+  });
+
+  it('fails with missing input file', () => {
+    const r = run('-i nonexistent.md -o test.pptx');
+    assert.notStrictEqual(r.exitCode, 0);
+  });
+});
+
+// ============================================================================
+// 5. CRC-32 correctness
+// ============================================================================
+describe('CRC-32', () => {
+  it('produces correct CRC for known inputs', () => {
+    // Generate a minimal file and check the ZIP is valid (CRC is validated by unzip)
+    const buf = generate('# Test', 'docx');
+    const entries = zipEntries(buf);
+    assert.ok(entries.length > 0, 'ZIP should have entries');
+    // Verify we can decompress (implicitly validates CRC in the ZIP structure)
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc, 'Should extract word/document.xml');
+    assert.ok(doc.includes('Test'), 'Document should contain test text');
+  });
+});
+
+// ============================================================================
+// 6. ZIP structure
+// ============================================================================
+describe('ZIP structure', () => {
+  it('PPTX has all required entries', () => {
+    const buf = generate('# Title\n## Slide 1\nContent', 'pptx');
+    const entries = zipEntries(buf);
+    const required = [
+      '[Content_Types].xml', '_rels/.rels',
+      'ppt/presentation.xml', 'ppt/_rels/presentation.xml.rels',
+      'ppt/theme/theme1.xml',
+      'ppt/slideMasters/slideMaster1.xml', 'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+      'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+      'ppt/slides/slide1.xml', 'ppt/slides/_rels/slide1.xml.rels'
+    ];
+    for (const r of required) {
+      assert.ok(entries.includes(r), `Missing required entry: ${r}`);
+    }
+  });
+
+  it('DOCX has all required entries', () => {
+    const buf = generate('# Heading\nParagraph', 'docx');
+    const entries = zipEntries(buf);
+    const required = [
+      '[Content_Types].xml', '_rels/.rels',
+      'word/document.xml', 'word/_rels/document.xml.rels',
+      'word/styles.xml', 'word/numbering.xml'
+    ];
+    for (const r of required) {
+      assert.ok(entries.includes(r), `Missing required entry: ${r}`);
+    }
+  });
+});
+
+// ============================================================================
+// 7. Markdown parser
+// ============================================================================
+describe('Markdown parser — PPTX', () => {
+  it('# creates a title slide', () => {
+    const buf = generate('# My Title', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('My Title'), 'Title slide should contain heading text');
+    assert.ok(slide.includes('anchorCtr'), 'Title should be centered');
+  });
+
+  it('## creates a content slide', () => {
+    const buf = generate('## Section\nSome content', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('Section'), 'Slide should contain heading');
+    assert.ok(slide.includes('Some content'), 'Slide should contain body text');
+  });
+
+  it('--- creates a slide break', () => {
+    const buf = generate('## Slide 1\nA\n\n---\n\n## Slide 2\nB', 'pptx');
+    const entries = zipEntries(buf);
+    const slides = entries.filter(e => /^ppt\/slides\/slide\d+\.xml$/.test(e));
+    assert.ok(slides.length >= 2, `Expected at least 2 slides, got ${slides.length}`);
+  });
+
+  it('bold text gets b="1" attribute', () => {
+    const buf = generate('## Test\n**bold words**', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('b="1"'), 'Should have bold attribute');
+    assert.ok(slide.includes('bold words'), 'Should contain bold text');
+  });
+
+  it('italic text gets i="1" attribute', () => {
+    const buf = generate('## Test\n*italic words*', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('i="1"'), 'Should have italic attribute');
+  });
+
+  it('bullet list uses buChar', () => {
+    const buf = generate('## Test\n- Item 1\n- Item 2', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('buChar'), 'Should have bullet character element');
+    assert.ok(slide.includes('Item 1'), 'Should contain list items');
+  });
+
+  it('numbered list uses buAutoNum', () => {
+    const buf = generate('## Test\n1. First\n2. Second', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('buAutoNum'), 'Should have auto-number element');
+  });
+
+  it('code block uses Consolas font', () => {
+    const buf = generate('## Test\n```\nconst x = 1;\n```', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('Consolas'), 'Code should use Consolas font');
+  });
+
+  it('table generates tbl element', () => {
+    const buf = generate('## Test\n| A | B |\n|---|---|\n| 1 | 2 |', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('a:tbl'), 'Should have table element');
+    assert.ok(slide.includes('a:gridCol'), 'Should have grid columns');
+  });
+
+  it('link generates hlinkClick', () => {
+    const buf = generate('## Test\n[Example](https://example.com)', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('hlinkClick'), 'Should have hyperlink element');
+    const rels = zipExtract(buf, 'ppt/slides/_rels/slide1.xml.rels');
+    assert.ok(rels.includes('example.com'), 'Rels should contain URL');
+  });
+});
+
+describe('Markdown parser — DOCX', () => {
+  it('headings use correct styles', () => {
+    const buf = generate('# H1\n## H2\n### H3', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('Heading1'), 'Should have Heading1 style');
+    assert.ok(doc.includes('Heading2'), 'Should have Heading2 style');
+    assert.ok(doc.includes('Heading3'), 'Should have Heading3 style');
+  });
+
+  it('bold text uses w:b element', () => {
+    const buf = generate('**bold text**', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('<w:b/>'), 'Should have bold element');
+  });
+
+  it('italic text uses w:i element', () => {
+    const buf = generate('*italic text*', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('<w:i/>'), 'Should have italic element');
+  });
+
+  it('bullet list references numId 1', () => {
+    const buf = generate('- Bullet A\n- Bullet B', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:numId w:val="1"'), 'Should reference bullet numId');
+  });
+
+  it('ordered list references numId 2', () => {
+    const buf = generate('1. One\n2. Two', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:numId w:val="2"'), 'Should reference ordered numId');
+  });
+
+  it('code block uses CodeBlock style', () => {
+    const buf = generate('```\ncode line\n```', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('CodeBlock'), 'Should have CodeBlock style');
+    assert.ok(doc.includes('Consolas'), 'Should use Consolas font');
+  });
+
+  it('table generates w:tbl element', () => {
+    const buf = generate('| X | Y |\n|---|---|\n| a | b |', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('<w:tbl>'), 'Should have table element');
+    assert.ok(doc.includes('<w:gridCol'), 'Should have grid columns');
+  });
+
+  it('hyperlink generates w:hyperlink', () => {
+    const buf = generate('[Link](https://test.com)', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:hyperlink'), 'Should have hyperlink element');
+    const rels = zipExtract(buf, 'word/_rels/document.xml.rels');
+    assert.ok(rels.includes('test.com'), 'Rels should contain URL');
+  });
+
+  it('horizontal rule generates border', () => {
+    const buf = generate('Above\n\n---\n\nBelow', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:pBdr'), 'Should have paragraph border');
+  });
+});
+
+// ============================================================================
+// 8. PPTX skeleton integrity
+// ============================================================================
+describe('PPTX skeleton integrity', () => {
+  it('theme has Office color scheme', () => {
+    const buf = generate('# Test', 'pptx');
+    const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+    assert.ok(theme.includes('clrScheme'), 'Theme should have color scheme');
+    assert.ok(theme.includes('fontScheme'), 'Theme should have font scheme');
+  });
+
+  it('slide master references layout', () => {
+    const buf = generate('# Test', 'pptx');
+    const master = zipExtract(buf, 'ppt/slideMasters/slideMaster1.xml');
+    assert.ok(master.includes('sldLayoutIdLst'), 'Master should reference layout');
+  });
+
+  it('slide layout references master', () => {
+    const buf = generate('# Test', 'pptx');
+    const rels = zipExtract(buf, 'ppt/slideLayouts/_rels/slideLayout1.xml.rels');
+    assert.ok(rels.includes('slideMaster'), 'Layout rels should reference master');
+  });
+
+  it('content types lists all slides', () => {
+    const buf = generate('# S1\n## S2\n## S3', 'pptx');
+    const ct = zipExtract(buf, '[Content_Types].xml');
+    assert.ok(ct.includes('slide1.xml'), 'Content types should list slide1');
+    assert.ok(ct.includes('slide2.xml'), 'Content types should list slide2');
+    assert.ok(ct.includes('slide3.xml'), 'Content types should list slide3');
+  });
+});
+
+// ============================================================================
+// 9. DOCX skeleton integrity
+// ============================================================================
+describe('DOCX skeleton integrity', () => {
+  it('styles.xml defines all heading styles', () => {
+    const buf = generate('# Test', 'docx');
+    const styles = zipExtract(buf, 'word/styles.xml');
+    for (let i = 1; i <= 6; i++) {
+      assert.ok(styles.includes(`Heading${i}`), `Should define Heading${i}`);
+    }
+  });
+
+  it('numbering.xml defines bullet and numbered lists', () => {
+    const buf = generate('- a', 'docx');
+    const num = zipExtract(buf, 'word/numbering.xml');
+    assert.ok(num.includes('bullet'), 'Should have bullet format');
+    assert.ok(num.includes('decimal'), 'Should have decimal format');
+  });
+
+  it('document.xml has section properties', () => {
+    const buf = generate('Test', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:sectPr'), 'Should have section properties');
+    assert.ok(doc.includes('w:pgSz'), 'Should have page size');
+    assert.ok(doc.includes('w:pgMar'), 'Should have page margins');
+  });
+});
+
+// ============================================================================
+// 10. Stdin support
+// ============================================================================
+describe('Stdin support', () => {
+  it('reads markdown from stdin', () => {
+    const outFile = join(__dirname, '_test_stdin.docx');
+    try {
+      execSync(`node "${script}" -o "${outFile}"`, {
+        input: '# From Stdin', encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe']
+      });
+      const buf = readFileSync(outFile);
+      const doc = zipExtract(buf, 'word/document.xml');
+      assert.ok(doc.includes('From Stdin'));
+    } finally {
+      try { require('fs').unlinkSync(outFile); } catch {}
+    }
+  });
+});

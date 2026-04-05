@@ -1,0 +1,15 @@
+{
+  "name": "create-office-file-skill",
+  "version": "1.0.0",
+  "description": "AI skill for markdown-to-Office conversion — zero dependencies, built from first principles",
+  "scripts": {
+    "test": "node --test tests/test-scripts.js"
+  },
+  "keywords": ["office", "pptx", "docx", "markdown", "claude", "copilot", "ai", "skill", "powerpoint", "word"],
+  "author": "Marcus Markiewicz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/supermem613/create-office-file-skill"
+  }
+}
