@@ -625,3 +625,134 @@ describe('Image with existing content', () => {
     assert.ok(doc.includes('Another paragraph'), 'Should have second paragraph');
   });
 });
+
+// ── Nested list tests ───────────────────────────────────────────────────────
+
+describe('Nested lists — parser', () => {
+  it('2-space indent produces level 1', () => {
+    const buf = generate('## Test\n- Top\n  - Sub', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // Level 1 items get marL = 342900 + 457200 = 800100
+    assert.ok(slide.includes('marL="800100"'), 'Should have level 1 margin');
+  });
+
+  it('4-space indent produces level 2', () => {
+    const buf = generate('## Test\n- Top\n    - Deep', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // Level 2 items get marL = 342900 + 914400 = 1257300
+    assert.ok(slide.includes('marL="1257300"'), 'Should have level 2 margin');
+  });
+
+  it('tab indent normalized to level 1', () => {
+    const buf = generate('## Test\n- Top\n\t- Tabbed', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('marL="800100"'), 'Tab should produce level 1 margin');
+  });
+
+  it('excess indent (6+ spaces) clamped to level 2', () => {
+    const buf = generate('## Test\n- Top\n      - TooDeep', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // Should be clamped to level 2, not level 3
+    assert.ok(slide.includes('marL="1257300"'), 'Excess indent should clamp to level 2');
+    assert.ok(!slide.includes('marL="1714500"'), 'Should NOT have level 3 margin');
+  });
+
+  it('flat list items default to level 0', () => {
+    const buf = generate('## Test\n- One\n- Two\n- Three', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // All items should use the original marL
+    assert.ok(slide.includes('marL="342900"'), 'Flat items should stay level 0');
+    assert.ok(!slide.includes('marL="800100"'), 'Should NOT have level 1 margin');
+  });
+});
+
+describe('Nested lists — PPTX', () => {
+  it('level 0 uses bullet char \u2022', () => {
+    const buf = generate('## Test\n- Top level', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('\u2022'), 'Level 0 should use bullet char \u2022');
+  });
+
+  it('level 1 uses dash char \u2013', () => {
+    const buf = generate('## Test\n- Top\n  - Sub', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('\u2013'), 'Level 1 should use dash char \u2013');
+  });
+
+  it('level 2 uses angle char \u203A', () => {
+    const buf = generate('## Test\n- Top\n    - Deep', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('\u203A'), 'Level 2 should use angle char \u203A');
+  });
+
+  it('numbered list nesting increases marL', () => {
+    const buf = generate('## Test\n1. Top\n  1. Sub\n    1. Deep', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('marL="342900"'), 'Level 0 margin present');
+    assert.ok(slide.includes('marL="800100"'), 'Level 1 margin present');
+    assert.ok(slide.includes('marL="1257300"'), 'Level 2 margin present');
+  });
+});
+
+describe('Nested lists — DOCX', () => {
+  it('level 0 uses ilvl 0', () => {
+    const buf = generate('- Top level item', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:ilvl w:val="0"'), 'Level 0 should use ilvl 0');
+  });
+
+  it('level 1 uses ilvl 1', () => {
+    const buf = generate('- Top\n  - Sub', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:ilvl w:val="1"'), 'Level 1 should use ilvl 1');
+  });
+
+  it('level 2 uses ilvl 2', () => {
+    const buf = generate('- Top\n    - Deep', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:ilvl w:val="2"'), 'Level 2 should use ilvl 2');
+  });
+
+  it('numbering.xml has 3 levels for bullet abstractNum', () => {
+    const buf = generate('- Item', 'docx');
+    const numbering = zipExtract(buf, 'word/numbering.xml');
+    assert.ok(numbering.includes('w:ilvl="0"'), 'Should define level 0');
+    assert.ok(numbering.includes('w:ilvl="1"'), 'Should define level 1');
+    assert.ok(numbering.includes('w:ilvl="2"'), 'Should define level 2');
+    assert.ok(numbering.includes('w:multiLevelType'), 'Should declare multiLevelType');
+  });
+
+  it('numbering.xml has 3 levels for numbered abstractNum', () => {
+    const buf = generate('1. Item', 'docx');
+    const numbering = zipExtract(buf, 'word/numbering.xml');
+    assert.ok(numbering.includes('w:numFmt w:val="decimal"'), 'Level 0 should be decimal');
+    assert.ok(numbering.includes('w:numFmt w:val="lowerLetter"'), 'Level 1 should be lowerLetter');
+    assert.ok(numbering.includes('w:numFmt w:val="lowerRoman"'), 'Level 2 should be lowerRoman');
+  });
+
+  it('nested ordered list uses ilvl 1 with numId 2', () => {
+    const buf = generate('1. Top\n  1. Sub', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:ilvl w:val="1"'), 'Sub-item should be ilvl 1');
+    assert.ok(doc.includes('w:numId w:val="2"'), 'Should reference numbered list numId');
+  });
+});
+
+describe('Nested lists — coexistence', () => {
+  it('mixed levels in PPTX produce correct margins alongside flat content', () => {
+    const buf = generate('## Slide\nSome text\n- Top\n  - Sub\n- Back to top', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('Some text'), 'Should have paragraph text');
+    assert.ok(slide.includes('marL="342900"'), 'Should have level 0 bullets');
+    assert.ok(slide.includes('marL="800100"'), 'Should have level 1 bullets');
+  });
+
+  it('mixed levels in DOCX produce correct ilvl values', () => {
+    const buf = generate('# Heading\n- Top\n  - Sub\n    - Deep\n- Back', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('Heading'), 'Should have heading');
+    assert.ok(doc.includes('w:ilvl w:val="0"'), 'Should have level 0');
+    assert.ok(doc.includes('w:ilvl w:val="1"'), 'Should have level 1');
+    assert.ok(doc.includes('w:ilvl w:val="2"'), 'Should have level 2');
+  });
+});

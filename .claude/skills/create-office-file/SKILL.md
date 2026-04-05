@@ -35,7 +35,7 @@ cat notes.md | node $SKILL_DIR/scripts/create-office-file.mjs -o notes.docx
 - Headings (`#` through `######`)
 - Paragraphs
 - **Bold** (`**text**`), *Italic* (`*text*`), ***Bold+Italic*** (`***text***`)
-- Bullet lists (`- item`), Numbered lists (`1. item`)
+- Bullet lists (`- item`), Numbered lists (`1. item`) — nested up to 3 levels via indentation
 - Fenced code blocks (with language hint)
 - Tables (`| col | col |`)
 - Links (`[text](url)`)
@@ -45,7 +45,7 @@ cat notes.md | node $SKILL_DIR/scripts/create-office-file.mjs -o notes.docx
 
 ## Not Supported
 
-Nested emphasis, reference-style links, HTML-in-markdown, remote images (URLs), nested lists beyond one level.
+Nested emphasis, reference-style links, HTML-in-markdown, remote images (URLs), nested lists beyond 3 levels.
 
 ## Reference Files
 

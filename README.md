@@ -25,7 +25,7 @@ This skill teaches AI coding agents to convert markdown into Office documents â€
 ### Supported Markdown
 - Headings (`#` through `######`)
 - Bold (`**text**`), Italic (`*text*`), Bold+Italic (`***text***`)
-- Bullet lists (`- item`), Numbered lists (`1. item`)
+- Bullet lists (`- item`), Numbered lists (`1. item`) â€” with nesting up to 3 levels
 - Fenced code blocks (` ``` `)
 - Tables (`| col | col |`)
 - Links (`[text](url)`)
@@ -112,7 +112,7 @@ Tests validate file structure, markdown parsing, ZIP generation, CRC-32 correctn
 
 | Feature | Why | Workaround |
 |---------|-----|-----------|
-| Nested lists (2+ levels) | Parser complexity vs. usage frequency | Single-level lists only |
+| Nested lists (3+ levels) | 3 levels covers virtually all real usage | Flatten deeper nesting to level 3 |
 | Custom themes/colors | Hard-coded theme covers 95% of cases | Edit theme constant in script |
 | PDF output | Different format entirely | Use Office's "Save as PDF" |
 | Template-based editing | Script generates from scratch only | Edit generated file in Office |

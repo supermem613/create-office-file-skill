@@ -190,8 +190,8 @@ function resolveImage(imgPath, basePath) {
  * AST node types:
  *   { type: 'heading', level: 1-6, children: [inline...] }
  *   { type: 'paragraph', children: [inline...] }
- *   { type: 'bullet_list', items: [{ children: [inline...] }] }
- *   { type: 'ordered_list', items: [{ children: [inline...] }] }
+ *   { type: 'bullet_list', items: [{ level: 0, children: [inline...] }] }
+ *   { type: 'ordered_list', items: [{ level: 0, children: [inline...] }] }
  *   { type: 'code_block', lang: string, text: string }
  *   { type: 'hr' }
  *   { type: 'table', headers: [string...], rows: [[string...]...] }
@@ -284,7 +284,10 @@ function parseMarkdown(md) {
     if (/^[\s]*[-*+]\s/.test(line)) {
       const items = [];
       while (i < lines.length && /^[\s]*[-*+]\s/.test(lines[i])) {
-        items.push({ children: parseInline(lines[i].replace(/^[\s]*[-*+]\s/, '')) });
+        const raw = lines[i];
+        const indent = raw.match(/^(\s*)/)[1].replace(/\t/g, '  ').length;
+        const level = Math.min(Math.floor(indent / 2), 2);
+        items.push({ level, children: parseInline(raw.replace(/^[\s]*[-*+]\s/, '')) });
         i++;
       }
       ast.push({ type: 'bullet_list', items });
@@ -295,7 +298,10 @@ function parseMarkdown(md) {
     if (/^[\s]*\d+[.)]\s/.test(line)) {
       const items = [];
       while (i < lines.length && /^[\s]*\d+[.)]\s/.test(lines[i])) {
-        items.push({ children: parseInline(lines[i].replace(/^[\s]*\d+[.)]\s/, '')) });
+        const raw = lines[i];
+        const indent = raw.match(/^(\s*)/)[1].replace(/\t/g, '  ').length;
+        const level = Math.min(Math.floor(indent / 2), 2);
+        items.push({ level, children: parseInline(raw.replace(/^[\s]*\d+[.)]\s/, '')) });
         i++;
       }
       ast.push({ type: 'ordered_list', items });
@@ -556,16 +562,23 @@ function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
       case 'paragraph':
         bodyParas += `<a:p>${inlineToDrawingML(node.children, 1800, links)}</a:p>`;
         break;
-      case 'bullet_list':
+      case 'bullet_list': {
+        const buChars = ['\u2022', '\u2013', '\u203A']; // •, –, ›
         for (const item of node.items) {
-          bodyParas += `<a:p><a:pPr marL="342900" indent="-342900"><a:buChar char="\u2022"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
+          const lvl = item.level || 0;
+          const marL = 342900 + lvl * 457200;
+          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buChar char="${buChars[lvl] || buChars[0]}"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
         }
         break;
-      case 'ordered_list':
+      }
+      case 'ordered_list': {
         for (const item of node.items) {
-          bodyParas += `<a:p><a:pPr marL="342900" indent="-342900"><a:buAutoNum type="arabicPeriod"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
+          const lvl = item.level || 0;
+          const marL = 342900 + lvl * 457200;
+          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buAutoNum type="arabicPeriod"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
         }
         break;
+      }
       case 'code_block':
         for (const codeLine of node.text.split('\n')) {
           bodyParas += `<a:p><a:r><a:rPr lang="en-US" sz="1400" dirty="0"><a:latin typeface="Consolas"/><a:cs typeface="Consolas"/><a:solidFill><a:srgbClr val="2B2B2B"/></a:solidFill></a:rPr><a:t>${esc(codeLine)}</a:t></a:r></a:p>`;
@@ -891,6 +904,7 @@ const DOCX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:abstractNum w:abstractNumId="0">
+    <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
       <w:start w:val="1"/>
       <w:numFmt w:val="bullet"/>
@@ -899,15 +913,46 @@ const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
       <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr>
     </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="o"/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:hint="default"/></w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="2">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="\u25A0"/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Wingdings" w:hAnsi="Wingdings" w:hint="default"/></w:rPr>
+    </w:lvl>
   </w:abstractNum>
   <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
   <w:abstractNum w:abstractNumId="1">
+    <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
       <w:start w:val="1"/>
       <w:numFmt w:val="decimal"/>
       <w:lvlText w:val="%1."/>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="lowerLetter"/>
+      <w:lvlText w:val="%2."/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+    </w:lvl>
+    <w:lvl w:ilvl="2">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="lowerRoman"/>
+      <w:lvlText w:val="%3."/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
     </w:lvl>
   </w:abstractNum>
   <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
@@ -988,12 +1033,14 @@ function astToDocxBody(ast, links, images, inputPath) {
       }
       case 'bullet_list':
         for (const item of node.items) {
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
+          const lvl = item.level || 0;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
         }
         break;
       case 'ordered_list':
         for (const item of node.items) {
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
+          const lvl = item.level || 0;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
         }
         break;
       case 'code_block':

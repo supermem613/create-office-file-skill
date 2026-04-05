@@ -113,14 +113,14 @@ Headings use paragraph styles defined in `styles.xml`:
 
 ## Lists (Bullet and Numbered)
 
-Lists use `<w:numPr>` in paragraph properties, referencing definitions in `numbering.xml`.
+Lists use `<w:numPr>` in paragraph properties, referencing definitions in `numbering.xml`. Nesting is controlled by `w:ilvl` (0-based indent level).
 
 ### Bullet list item
 ```xml
 <w:p>
   <w:pPr>
     <w:numPr>
-      <w:ilvl w:val="0"/>    <!-- indent level: 0-based -->
+      <w:ilvl w:val="0"/>    <!-- indent level: 0-based, max 8 -->
       <w:numId w:val="1"/>   <!-- references numbering.xml abstractNumId -->
     </w:numPr>
   </w:pPr>
@@ -145,31 +145,54 @@ Lists use `<w:numPr>` in paragraph properties, referencing definitions in `numbe
 </w:p>
 ```
 
-### numbering.xml structure
+### numbering.xml structure (multi-level)
 ```xml
 <w:numbering xmlns:w="...">
-  <!-- Bullet list definition -->
+  <!-- Bullet list definition — 3 levels -->
   <w:abstractNum w:abstractNumId="0">
+    <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
       <w:start w:val="1"/>
       <w:numFmt w:val="bullet"/>
       <w:lvlText w:val="•"/>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/></w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="o"/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/></w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="2">
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="■"/>
+      <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Wingdings" w:hAnsi="Wingdings"/></w:rPr>
     </w:lvl>
   </w:abstractNum>
   <w:num w:numId="1">
     <w:abstractNumId w:val="0"/>
   </w:num>
 
-  <!-- Numbered list definition -->
+  <!-- Numbered list definition — 3 levels -->
   <w:abstractNum w:abstractNumId="1">
+    <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
-      <w:start w:val="1"/>
       <w:numFmt w:val="decimal"/>
       <w:lvlText w:val="%1."/>
-      <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:numFmt w:val="lowerLetter"/>
+      <w:lvlText w:val="%2."/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+    </w:lvl>
+    <w:lvl w:ilvl="2">
+      <w:numFmt w:val="lowerRoman"/>
+      <w:lvlText w:val="%3."/>
+      <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
     </w:lvl>
   </w:abstractNum>
   <w:num w:numId="2">

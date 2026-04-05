@@ -294,6 +294,42 @@ Second paragraph with conclusions.
 
 ---
 
+## PPTX — Nested Lists (1)
+
+### Eval 23: Nested bullet list (PPTX)
+**Input markdown:**
+```markdown
+## List Demo
+- Top level item
+  - Second level item
+    - Third level item
+- Back to top
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval23.pptx`
+**Verify:** `node $VER evals/results/eval23.pptx`
+**Pass if:** JSON contains shapes with text `Top level item`, `Second level item`, `Third level item`, `Back to top`; file opens without repair dialog
+
+## DOCX — Nested Lists (1)
+
+### Eval 24: Nested mixed list (DOCX)
+**Input markdown:**
+```markdown
+# Nested Lists
+- Bullet level 0
+  - Bullet level 1
+    - Bullet level 2
+- Back to level 0
+
+1. Number level 0
+  1. Number level 1
+    1. Number level 2
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval24.docx`
+**Verify:** `node $VER evals/results/eval24.docx`
+**Pass if:** JSON paragraph text contains all items; bullet items show different bullet chars per level; numbered items show different formats per level; file opens without repair dialog
+
+---
+
 ## Report
 
 After completing all evals, write `evals/results/report.md`:
@@ -303,7 +339,7 @@ After completing all evals, write `evals/results/report.md`:
 
 **Platform:** Windows [version]
 **Office:** [Word/PowerPoint version]
-**Overall:** [passed]/22 ([percentage]%) — [failed] failed, [skipped] skipped
+**Overall:** [passed]/24 ([percentage]%) — [failed] failed, [skipped] skipped
 
 ## Summary
 
@@ -313,10 +349,12 @@ After completing all evals, write `evals/results/report.md`:
 | PPTX Formatting    |      |      |      | 5     |
 | PPTX Content       |      |      |      | 2     |
 | PPTX Images        |      |      |      | 2     |
+| PPTX Nested Lists  |      |      |      | 1     |
 | DOCX Structure     |      |      |      | 2     |
 | DOCX Formatting    |      |      |      | 4     |
 | DOCX Content       |      |      |      | 2     |
 | DOCX Images        |      |      |      | 2     |
+| DOCX Nested Lists  |      |      |      | 1     |
 
 ## Results
 
@@ -344,6 +382,8 @@ After completing all evals, write `evals/results/report.md`:
 | 20 | Image + text (PPTX)   |       |       |
 | 21 | Image (DOCX)          |       |       |
 | 22 | Image + text (DOCX)   |       |       |
+| 23 | Nested list (PPTX)    |       |       |
+| 24 | Nested list (DOCX)    |       |       |
 
 ## Failures
 [Details for any ❌]

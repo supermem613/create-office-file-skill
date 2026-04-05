@@ -94,6 +94,9 @@ Default 16:9 widescreen:
 - `marL` = left margin in EMU
 - `indent` = negative for hanging indent (bullet hangs left of text)
 - Nested bullets: increase `marL` by 457200 per level
+  - Level 0: marL="342900", char="•"
+  - Level 1: marL="800100", char="–"
+  - Level 2: marL="1257300", char="›"
 
 ### Numbered list paragraph
 ```xml
