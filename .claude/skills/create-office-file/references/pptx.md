@@ -203,3 +203,38 @@ Tables in PPTX use `<a:tbl>` inside a `<a:graphicFrame>`:
   </a:graphic>
 </p:graphicFrame>
 ```
+
+## Image (Picture) Structure
+
+Images in PPTX use `<p:pic>` shape with a blipFill referencing embedded media:
+```xml
+<p:pic>
+  <p:nvPicPr>
+    <p:cNvPr id="4" name="Picture 3"/>
+    <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
+    <p:nvPr/>
+  </p:nvPicPr>
+  <p:blipFill>
+    <a:blip r:embed="rId3"/>
+    <a:stretch><a:fillRect/></a:stretch>
+  </p:blipFill>
+  <p:spPr>
+    <a:xfrm>
+      <a:off x="457200" y="1600200"/>
+      <a:ext cx="1905000" cy="1428750"/>
+    </a:xfrm>
+    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+  </p:spPr>
+</p:pic>
+```
+
+Requires:
+- Image binary in `ppt/media/image1.png`
+- Relationship in slide rels: `<Relationship Id="rId3" Type=".../relationships/image" Target="../media/image1.png"/>`
+- Content type default: `<Default Extension="png" ContentType="image/png"/>`
+
+### Sizing
+
+- Dimensions in EMU: `pixels × 914400 / 96` (96 DPI)
+- Use `noChangeAspect="1"` in picLocks to preserve aspect ratio
+- Cap to slide content area: ~10" × 5" (leaving room for title)

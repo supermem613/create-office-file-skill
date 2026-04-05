@@ -278,6 +278,57 @@ A horizontal rule in DOCX renders as a paragraph border:
 | `#####` | Heading5 | 22 (11pt) |
 | `######` | Heading6 | 22 (11pt) italic |
 
+## Inline Images
+
+Images use `<w:drawing>` with `<wp:inline>` inside a run:
+```xml
+<w:r>
+  <w:drawing>
+    <wp:inline distT="0" distB="0" distL="0" distR="0">
+      <wp:extent cx="1905000" cy="1428750"/>
+      <wp:effectExtent l="0" t="0" r="0" b="0"/>
+      <wp:docPr id="1" name="Picture 1"/>
+      <wp:cNvGraphicFramePr>
+        <a:graphicFrameLocks noChangeAspect="1"/>
+      </wp:cNvGraphicFramePr>
+      <a:graphic>
+        <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+          <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:nvPicPr>
+              <pic:cNvPr id="0" name="image1.png"/>
+              <pic:cNvPicPr/>
+            </pic:nvPicPr>
+            <pic:blipFill>
+              <a:blip r:embed="rId5"/>
+              <a:stretch><a:fillRect/></a:stretch>
+            </pic:blipFill>
+            <pic:spPr>
+              <a:xfrm>
+                <a:off x="0" y="0"/>
+                <a:ext cx="1905000" cy="1428750"/>
+              </a:xfrm>
+              <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+            </pic:spPr>
+          </pic:pic>
+        </a:graphicData>
+      </a:graphic>
+    </wp:inline>
+  </w:drawing>
+</w:r>
+```
+
+Requires:
+- Image binary in `word/media/image1.png`
+- Relationship: `<Relationship Id="rId5" Type=".../relationships/image" Target="media/image1.png"/>`
+- Content type default: `<Default Extension="png" ContentType="image/png"/>`
+- Additional namespaces on `<w:document>`: `xmlns:wp`, `xmlns:a`, `xmlns:pic`
+
+### Sizing
+
+- Dimensions in EMU: `pixels × 914400 / 96` (96 DPI)
+- Max width: page width minus margins = 6.5" = 5943600 EMU
+- Use `noChangeAspect="1"` to preserve aspect ratio
+
 ## Content Types for DOCX
 
 ```xml

@@ -235,6 +235,65 @@ This report covers **important** findings.
 
 ---
 
+## PPTX — Images (2)
+
+### 19 — PPTX with embedded PNG
+**Input:**
+```markdown
+## Photo Slide
+
+![Test Image](test-image.png)
+```
+**Setup:** Copy `tests/test-image.png` to the temp directory next to the markdown file.
+**Generate:** Write input to `EVAL_TEST_19.md` in temp dir (with test-image.png alongside), then `node $GEN -i EVAL_TEST_19.md -o EVAL_TEST_19.pptx`
+**Verify:** `node $VER EVAL_TEST_19.pptx`
+**Pass if:** JSON has no `.error`, AND any shape in any slide has `.isPicture` = true OR `.shapeType` = 13
+
+### 20 — PPTX with image and text
+**Input:**
+```markdown
+## Mixed Slide
+Here is some text content.
+
+![Chart](test-image.png)
+```
+**Setup:** Same as 19 — ensure test-image.png is alongside the markdown file.
+**Generate & verify as above**
+**Pass if:** Any slide has a shape with `.isPicture` = true AND another shape with `.hasText` = true containing `some text content`
+
+---
+
+## DOCX — Images (2)
+
+### 21 — DOCX with embedded PNG
+**Input:**
+```markdown
+# Document with Image
+
+![Test Image](test-image.png)
+```
+**Setup:** Copy `tests/test-image.png` to temp dir next to the markdown file.
+**Generate:** `node $GEN -i EVAL_TEST_21.md -o EVAL_TEST_21.docx`
+**Verify:** `node $VER EVAL_TEST_21.docx`
+**Pass if:** JSON `.inlineShapeCount` >= 1
+
+### 22 — DOCX with image and surrounding text
+**Input:**
+```markdown
+# Report
+
+First paragraph of text.
+
+![Data Chart](test-image.png)
+
+Second paragraph with conclusions.
+```
+**Setup:** Same as 21.
+**Generate & verify as above**
+**Pass if:** JSON `.inlineShapeCount` >= 1 AND paragraph text contains `First paragraph` AND `Second paragraph`
+
+---
+
 ## Report
 
 After completing all evals, write `evals/results/report.md`:
@@ -244,7 +303,7 @@ After completing all evals, write `evals/results/report.md`:
 
 **Platform:** Windows [version]
 **Office:** [Word/PowerPoint version]
-**Overall:** [passed]/18 ([percentage]%) — [failed] failed, [skipped] skipped
+**Overall:** [passed]/22 ([percentage]%) — [failed] failed, [skipped] skipped
 
 ## Summary
 
@@ -253,9 +312,11 @@ After completing all evals, write `evals/results/report.md`:
 | PPTX Structure     |      |      |      | 3     |
 | PPTX Formatting    |      |      |      | 5     |
 | PPTX Content       |      |      |      | 2     |
+| PPTX Images        |      |      |      | 2     |
 | DOCX Structure     |      |      |      | 2     |
 | DOCX Formatting    |      |      |      | 4     |
 | DOCX Content       |      |      |      | 2     |
+| DOCX Images        |      |      |      | 2     |
 
 ## Results
 
@@ -279,6 +340,10 @@ After completing all evals, write `evals/results/report.md`:
 | 16 | Code block (DOCX)     |       |       |
 | 17 | Table (DOCX)          |       |       |
 | 18 | Full document (DOCX)  |       |       |
+| 19 | Image (PPTX)          |       |       |
+| 20 | Image + text (PPTX)   |       |       |
+| 21 | Image (DOCX)          |       |       |
+| 22 | Image + text (DOCX)   |       |       |
 
 ## Failures
 [Details for any ❌]

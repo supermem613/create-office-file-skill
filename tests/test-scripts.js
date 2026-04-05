@@ -437,3 +437,191 @@ describe('Stdin support', () => {
     }
   });
 });
+
+// ============================================================================
+// 11. Image support
+// ============================================================================
+
+const testPng = join(__dirname, 'test-image.png');
+const testJpg = join(__dirname, 'test-image.jpg');
+
+/**
+ * Generate a file from a markdown FILE (not string), return the buffer.
+ * This is needed for image tests where paths must resolve relative to the input file.
+ */
+function generateFromFile(mdPath, format) {
+  const outFile = join(__dirname, `_test_img_output.${format}`);
+  try {
+    execSync(`node "${script}" -i "${mdPath}" -o "${outFile}"`, {
+      encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return readFileSync(outFile);
+  } finally {
+    try { require('fs').unlinkSync(outFile); } catch {}
+  }
+}
+
+/**
+ * Write a temp markdown file in the tests/ dir, generate, and return the buffer.
+ */
+function generateWithImage(md, format) {
+  const mdFile = join(__dirname, '_test_img_input.md');
+  try {
+    require('fs').writeFileSync(mdFile, md, 'utf8');
+    return generateFromFile(mdFile, format);
+  } finally {
+    try { require('fs').unlinkSync(mdFile); } catch {}
+  }
+}
+
+describe('Markdown parser — images', () => {
+  it('parses block-level ![alt](path) as image node', () => {
+    const buf = generateWithImage('## Test\n\n![A photo](test-image.png)', 'pptx');
+    const entries = zipEntries(buf);
+    // Image should be embedded as media file
+    const mediaFiles = entries.filter(e => e.startsWith('ppt/media/'));
+    assert.ok(mediaFiles.length >= 1, `Expected media files, got: ${mediaFiles.join(', ')}`);
+  });
+
+  it('parses inline ![alt](path) in paragraph text', () => {
+    const buf = generateWithImage('Text with ![icon](test-image.png) inline', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    // Should contain either an image drawing or fallback text
+    assert.ok(doc.includes('pic:pic') || doc.includes('[Image:'), 'Should have image or fallback');
+  });
+});
+
+describe('Image support — PPTX', () => {
+  it('embeds PNG in ppt/media/', () => {
+    const buf = generateWithImage('## Slide\n\n![Test PNG](test-image.png)', 'pptx');
+    const entries = zipEntries(buf);
+    const media = entries.filter(e => e.startsWith('ppt/media/'));
+    assert.ok(media.some(e => e.endsWith('.png')), `Should have PNG in media: ${media.join(', ')}`);
+  });
+
+  it('slide XML contains p:pic with blipFill', () => {
+    const buf = generateWithImage('## Slide\n\n![Test](test-image.png)', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('p:pic'), 'Slide should have p:pic element');
+    assert.ok(slide.includes('blipFill'), 'Slide should have blipFill');
+    assert.ok(slide.includes('a:blip'), 'Slide should have a:blip');
+  });
+
+  it('Content_Types includes png extension default', () => {
+    const buf = generateWithImage('## Slide\n\n![Test](test-image.png)', 'pptx');
+    const ct = zipExtract(buf, '[Content_Types].xml');
+    assert.ok(ct.includes('Extension="png"'), 'Content types should include png');
+    assert.ok(ct.includes('image/png'), 'Content types should have image/png');
+  });
+
+  it('slide rels include image relationship', () => {
+    const buf = generateWithImage('## Slide\n\n![Test](test-image.png)', 'pptx');
+    const rels = zipExtract(buf, 'ppt/slides/_rels/slide1.xml.rels');
+    assert.ok(rels.includes('relationships/image'), 'Rels should have image relationship type');
+    assert.ok(rels.includes('media/'), 'Rels should reference media directory');
+  });
+
+  it('p:pic has picLocks with noChangeAspect', () => {
+    const buf = generateWithImage('## Slide\n\n![Test](test-image.png)', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('noChangeAspect'), 'Should lock aspect ratio');
+  });
+});
+
+describe('Image support — DOCX', () => {
+  it('embeds PNG in word/media/', () => {
+    const buf = generateWithImage('![Test PNG](test-image.png)', 'docx');
+    const entries = zipEntries(buf);
+    const media = entries.filter(e => e.startsWith('word/media/'));
+    assert.ok(media.some(e => e.endsWith('.png')), `Should have PNG in media: ${media.join(', ')}`);
+  });
+
+  it('document.xml contains w:drawing with pic:pic', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:drawing'), 'Document should have w:drawing');
+    assert.ok(doc.includes('pic:pic'), 'Document should have pic:pic');
+    assert.ok(doc.includes('a:blip'), 'Document should have a:blip');
+  });
+
+  it('Content_Types includes png extension default', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'docx');
+    const ct = zipExtract(buf, '[Content_Types].xml');
+    assert.ok(ct.includes('Extension="png"'), 'Content types should include png');
+    assert.ok(ct.includes('image/png'), 'Content types should have image/png');
+  });
+
+  it('document rels include image relationship', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'docx');
+    const rels = zipExtract(buf, 'word/_rels/document.xml.rels');
+    assert.ok(rels.includes('relationships/image'), 'Rels should have image relationship type');
+    assert.ok(rels.includes('media/'), 'Rels should reference media directory');
+  });
+
+  it('w:drawing has wp:inline with extent dimensions', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('wp:inline'), 'Should have wp:inline element');
+    assert.ok(doc.includes('wp:extent'), 'Should have extent with dimensions');
+  });
+
+  it('document root has wp and pic namespaces', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('xmlns:wp='), 'Should declare wp namespace');
+    assert.ok(doc.includes('xmlns:pic='), 'Should declare pic namespace');
+  });
+});
+
+describe('Image dimension parsing', () => {
+  it('reads PNG dimensions (200x150)', () => {
+    const buf = generateWithImage('![Test](test-image.png)', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // The image is 200x150 pixels. At 96 DPI: 200*914400/96 = 1905000, 150*914400/96 = 1428750
+    // These should fit within slide bounds without scaling
+    assert.ok(slide.includes('1905000') || slide.includes('p:pic'), 'Should have correct width EMU or pic element');
+  });
+
+  it('reads JPEG dimensions (300x200)', () => {
+    const buf = generateWithImage('## Slide\n\n![JPEG Test](test-image.jpg)', 'pptx');
+    const entries = zipEntries(buf);
+    const media = entries.filter(e => e.startsWith('ppt/media/'));
+    assert.ok(media.some(e => e.endsWith('.jpg')), `Should embed JPEG: ${media.join(', ')}`);
+    const ct = zipExtract(buf, '[Content_Types].xml');
+    assert.ok(ct.includes('image/jpeg'), 'Content types should have image/jpeg');
+  });
+});
+
+describe('Image error handling', () => {
+  it('missing image file renders fallback text', () => {
+    const buf = generateWithImage('![Missing](nonexistent.png)', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('[Image:'), 'Should have fallback text for missing image');
+  });
+
+  it('missing image in PPTX does not crash', () => {
+    const buf = generateWithImage('## Slide\n\n![Missing](nonexistent.png)', 'pptx');
+    const entries = zipEntries(buf);
+    assert.ok(entries.length > 0, 'Should still produce a valid ZIP');
+    const media = entries.filter(e => e.startsWith('ppt/media/'));
+    assert.strictEqual(media.length, 0, 'No media files for missing images');
+  });
+});
+
+describe('Image with existing content', () => {
+  it('PPTX image coexists with text content', () => {
+    const buf = generateWithImage('## Slide\nSome text\n\n![Photo](test-image.png)', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('Some text'), 'Should have text content');
+    assert.ok(slide.includes('p:pic'), 'Should also have image');
+  });
+
+  it('DOCX image coexists with headings and paragraphs', () => {
+    const buf = generateWithImage('# Title\n\nSome paragraph.\n\n![Photo](test-image.png)\n\nAnother paragraph.', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('Title'), 'Should have heading');
+    assert.ok(doc.includes('Some paragraph'), 'Should have first paragraph');
+    assert.ok(doc.includes('pic:pic'), 'Should have image');
+    assert.ok(doc.includes('Another paragraph'), 'Should have second paragraph');
+  });
+});

@@ -5,7 +5,7 @@
 'use strict';
 
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { resolve, extname } from 'path';
+import { resolve, extname, dirname, join, basename } from 'path';
 import { deflateRawSync } from 'zlib';
 
 // ============================================================================
@@ -115,6 +115,74 @@ function esc(s) {
 }
 
 // ============================================================================
+// Image Utilities (PNG/JPEG header parsing, sizing)
+// ============================================================================
+
+const IMAGE_CONTENT_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+};
+
+function readImageDimensions(buf) {
+  // PNG: signature (8 bytes) + IHDR chunk (length=4, type=4, data=13)
+  // Width at offset 16, height at offset 20 (big-endian uint32)
+  if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), format: 'png' };
+  }
+  // JPEG: scan for SOF0 (0xFFC0) or SOF2 (0xFFC2) marker
+  // Height at marker+5, width at marker+7 (big-endian uint16)
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xD8) {
+    let pos = 2;
+    while (pos < buf.length - 9) {
+      if (buf[pos] !== 0xFF) { pos++; continue; }
+      const marker = buf[pos + 1];
+      if (marker === 0xC0 || marker === 0xC2) {
+        return { width: buf.readUInt16BE(pos + 7), height: buf.readUInt16BE(pos + 5), format: 'jpeg' };
+      }
+      // Skip variable-length segment
+      if (marker >= 0xC0 && marker !== 0xFF) {
+        const segLen = buf.readUInt16BE(pos + 2);
+        pos += 2 + segLen;
+      } else {
+        pos++;
+      }
+    }
+    return { width: 0, height: 0, format: 'jpeg' };
+  }
+  return null;
+}
+
+// Convert pixel dimensions to EMU, preserving aspect ratio within max bounds
+const PX_TO_EMU = 914400 / 96; // 96 DPI assumption
+
+function fitImageEMU(widthPx, heightPx, maxWidthEMU, maxHeightEMU) {
+  let w = widthPx * PX_TO_EMU;
+  let h = heightPx * PX_TO_EMU;
+  if (w > maxWidthEMU) { const scale = maxWidthEMU / w; w = maxWidthEMU; h *= scale; }
+  if (h > maxHeightEMU) { const scale = maxHeightEMU / h; h = maxHeightEMU; w *= scale; }
+  return { cx: Math.round(w), cy: Math.round(h) };
+}
+
+// Default image size when dimensions can't be read: 4" × 3"
+const DEFAULT_IMG_W = 4 * 914400;
+const DEFAULT_IMG_H = 3 * 914400;
+
+function resolveImage(imgPath, basePath) {
+  const resolved = basePath ? resolve(dirname(basePath), imgPath) : resolve(imgPath);
+  if (!existsSync(resolved)) return null;
+  try {
+    const buf = readFileSync(resolved);
+    const ext = extname(resolved).toLowerCase();
+    const contentType = IMAGE_CONTENT_TYPES[ext];
+    if (!contentType) return null;
+    const dims = readImageDimensions(buf);
+    return { buffer: buf, ext, contentType, width: dims?.width || 0, height: dims?.height || 0 };
+  } catch { return null; }
+}
+
+// ============================================================================
 // Markdown Parser (constrained subset → AST)
 // ============================================================================
 
@@ -135,11 +203,12 @@ function esc(s) {
  *   { type: 'bold_italic', text: string }
  *   { type: 'code', text: string }
  *   { type: 'link', text: string, url: string }
+ *   { type: 'image', alt: string, src: string }
  */
 
 function parseInline(text) {
   const tokens = [];
-  const re = /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))/g;
+  const re = /(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\))/g;
   let last = 0;
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -148,7 +217,8 @@ function parseInline(text) {
     else if (m[3]) tokens.push({ type: 'bold', text: m[3] });
     else if (m[4]) tokens.push({ type: 'italic', text: m[4] });
     else if (m[5]) tokens.push({ type: 'code', text: m[5] });
-    else if (m[6]) tokens.push({ type: 'link', text: m[6], url: m[7] });
+    else if (m[6] !== undefined) tokens.push({ type: 'image', alt: m[6], src: m[7] });
+    else if (m[8]) tokens.push({ type: 'link', text: m[8], url: m[9] });
     last = m.index + m[0].length;
   }
   if (last < text.length) tokens.push({ type: 'text', text: text.slice(last) });
@@ -232,6 +302,14 @@ function parseMarkdown(md) {
       continue;
     }
 
+    // Block-level image (standalone line: ![alt](path))
+    const imgMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (imgMatch) {
+      ast.push({ type: 'image', alt: imgMatch[1], src: imgMatch[2] });
+      i++;
+      continue;
+    }
+
     // Paragraph (accumulate consecutive non-empty, non-special lines)
     const paraLines = [];
     while (i < lines.length && lines[i].trim() !== '' &&
@@ -258,16 +336,21 @@ function parseMarkdown(md) {
 const SLIDE_W = 12192000; // 13.333" in EMU
 const SLIDE_H = 6858000;  // 7.5" in EMU
 
-function pptxContentTypes(slideCount) {
+function pptxContentTypes(slideCount, imageExts) {
   let overrides = '';
   for (let i = 1; i <= slideCount; i++) {
     overrides += `  <Override PartName="/ppt/slides/slide${i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>\n`;
+  }
+  let imgDefaults = '';
+  for (const ext of imageExts) {
+    const ct = IMAGE_CONTENT_TYPES['.' + ext];
+    if (ct) imgDefaults += `  <Default Extension="${ext}" ContentType="${ct}"/>\n`;
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+${imgDefaults}  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
   <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
   <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
   <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
@@ -383,10 +466,14 @@ const PPTX_SLIDE_LAYOUT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone=
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
 </Relationships>`;
 
-function pptxSlideRels(links) {
+function pptxSlideRels(links, images) {
   let extra = '';
   links.forEach((url, idx) => {
     extra += `\n  <Relationship Id="rId${idx + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
+  });
+  const imgBase = links.length + 2;
+  images.forEach((img, idx) => {
+    extra += `\n  <Relationship Id="rId${imgBase + idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${img.name}"/>`;
   });
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -428,7 +515,7 @@ function buildTitleSlide(heading, shapeId) {
     <a:p><a:pPr algn="ctr"/>${runs}</a:p>
   </p:txBody>
 </p:sp>`;
-  return { xml, links };
+  return { xml, links, images: [] };
 }
 
 function buildSlideTitleShape(title, shapeId, links) {
@@ -448,14 +535,23 @@ function buildSlideTitleShape(title, shapeId, links) {
 </p:sp>`, nextId: shapeId + 1 };
 }
 
-function buildContentSlide(title, bodyNodes, startShapeId) {
+function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
   const links = [];
+  const images = []; // { name, buffer, rId }
   const { xml: titleShape, nextId } = buildSlideTitleShape(title, startShapeId, links);
   let shapeId = nextId;
 
-  // Body content
+  // Max image bounds within slide content area
+  const IMG_MAX_W = 10 * 914400; // 10 inches
+  const IMG_MAX_H = 4 * 914400;  // 4 inches (leave room for title + text)
+
+  // Separate images from text content
+  const textNodes = bodyNodes.filter(n => n.type !== 'image');
+  const imageNodes = bodyNodes.filter(n => n.type === 'image');
+
+  // Body text content
   let bodyParas = '';
-  for (const node of bodyNodes) {
+  for (const node of textNodes) {
     switch (node.type) {
       case 'paragraph':
         bodyParas += `<a:p>${inlineToDrawingML(node.children, 1800, links)}</a:p>`;
@@ -486,10 +582,13 @@ function buildContentSlide(title, bodyNodes, startShapeId) {
   // If no body paragraphs, add empty paragraph to keep slide valid
   if (!bodyParas) bodyParas = '<a:p><a:endParaRPr lang="en-US"/></a:p>';
 
+  // Adjust body shape height if images are present
+  const hasImages = imageNodes.length > 0;
+  const bodyH = hasImages ? 2200000 : 4525963;
   const bodyShape = `<p:sp>
   <p:nvSpPr><p:cNvPr id="${shapeId++}" name="Content"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>
   <p:spPr>
-    <a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="11277600" cy="4525963"/></a:xfrm>
+    <a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="11277600" cy="${bodyH}"/></a:xfrm>
     <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
   </p:spPr>
   <p:txBody>
@@ -499,7 +598,43 @@ function buildContentSlide(title, bodyNodes, startShapeId) {
   </p:txBody>
 </p:sp>`;
 
-  return { xml: titleShape + '\n' + bodyShape, links };
+  // Build p:pic shapes for images
+  let imgShapes = '';
+  for (const imgNode of imageNodes) {
+    const imgData = resolveImage(imgNode.src, inputPath);
+    if (!imgData) {
+      // Fallback: render alt text as a text paragraph
+      bodyParas += `<a:p><a:r><a:rPr lang="en-US" sz="1400" i="1" dirty="0"/><a:t>[Image: ${esc(imgNode.alt || imgNode.src)}]</a:t></a:r></a:p>`;
+      continue;
+    }
+    const imgName = `image${images.length + 1}${imgData.ext}`;
+    const rId = `rId${links.length + 2 + images.length}`;
+    images.push({ name: imgName, buffer: imgData.buffer, rId });
+
+    const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
+    const h = imgData.height || Math.round(DEFAULT_IMG_H / PX_TO_EMU);
+    const { cx, cy } = fitImageEMU(w, h, IMG_MAX_W, IMG_MAX_H);
+    const imgX = Math.round(457200 + (11277600 - cx) / 2); // center horizontally
+    const imgY = hasImages ? 3900000 : 1600200;
+
+    imgShapes += `\n<p:pic>
+  <p:nvPicPr>
+    <p:cNvPr id="${shapeId++}" name="${esc(imgNode.alt || imgName)}"/>
+    <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
+    <p:nvPr/>
+  </p:nvPicPr>
+  <p:blipFill>
+    <a:blip r:embed="${rId}"/>
+    <a:stretch><a:fillRect/></a:stretch>
+  </p:blipFill>
+  <p:spPr>
+    <a:xfrm><a:off x="${imgX}" y="${imgY}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>
+    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+  </p:spPr>
+</p:pic>`;
+  }
+
+  return { xml: titleShape + '\n' + bodyShape + imgShapes, links, images };
 }
 
 function buildTableSlide(title, table, startShapeId) {
@@ -540,7 +675,7 @@ function buildTableSlide(title, table, startShapeId) {
   </a:graphic>
 </p:graphicFrame>`;
 
-  return { xml: titleShape + '\n' + tableFrame, links };
+  return { xml: titleShape + '\n' + tableFrame, links, images: [] };
 }
 
 function wrapSlide(innerXml) {
@@ -558,8 +693,8 @@ function wrapSlide(innerXml) {
 </p:sld>`;
 }
 
-function astToSlides(ast) {
-  const slides = []; // [{ xml, links }]
+function astToSlides(ast, inputPath) {
+  const slides = []; // [{ xml, links, images }]
   let currentTitle = null;
   let currentBody = [];
 
@@ -574,9 +709,9 @@ function astToSlides(ast) {
     } else if (currentTitle && currentTitle.level === 1 && currentBody.length === 0) {
       result = buildTitleSlide(currentTitle, 2);
     } else {
-      result = buildContentSlide(currentTitle, currentBody, 2);
+      result = buildContentSlide(currentTitle, currentBody, 2, inputPath);
     }
-    slides.push({ xml: wrapSlide(result.xml), links: result.links });
+    slides.push({ xml: wrapSlide(result.xml), links: result.links, images: result.images || [] });
     currentTitle = null;
     currentBody = [];
   }
@@ -597,18 +732,29 @@ function astToSlides(ast) {
   if (slides.length === 0) {
     slides.push({
       xml: wrapSlide('<p:sp><p:nvSpPr><p:cNvPr id="2" name="Empty"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="11277600" cy="4525963"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody></p:sp>'),
-      links: []
+      links: [],
+      images: []
     });
   }
 
   return slides;
 }
 
-function generatePptx(ast) {
-  const slides = astToSlides(ast);
+function generatePptx(ast, inputPath) {
+  const slides = astToSlides(ast, inputPath);
   const zip = new ZipWriter();
 
-  zip.addFile('[Content_Types].xml', pptxContentTypes(slides.length));
+  // Collect all unique image extensions for content types
+  const imageExts = new Set();
+  const allImages = [];
+  slides.forEach(slide => {
+    for (const img of slide.images) {
+      imageExts.add(img.name.split('.').pop());
+      allImages.push(img);
+    }
+  });
+
+  zip.addFile('[Content_Types].xml', pptxContentTypes(slides.length, imageExts));
   zip.addFile('_rels/.rels', PPTX_ROOT_RELS);
   zip.addFile('ppt/presentation.xml', pptxPresentation(slides.length));
   zip.addFile('ppt/_rels/presentation.xml.rels', pptxPresentationRels(slides.length));
@@ -620,7 +766,10 @@ function generatePptx(ast) {
 
   slides.forEach((slide, i) => {
     zip.addFile(`ppt/slides/slide${i + 1}.xml`, slide.xml);
-    zip.addFile(`ppt/slides/_rels/slide${i + 1}.xml.rels`, pptxSlideRels(slide.links));
+    zip.addFile(`ppt/slides/_rels/slide${i + 1}.xml.rels`, pptxSlideRels(slide.links, slide.images));
+    for (const img of slide.images) {
+      zip.addFile(`ppt/media/${img.name}`, img.buffer);
+    }
   });
 
   return zip.toBuffer();
@@ -630,25 +779,36 @@ function generatePptx(ast) {
 // DOCX Generator (WordprocessingML with hard-coded templates)
 // ============================================================================
 
-const DOCX_CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+function docxContentTypes(imageExts) {
+  let imgDefaults = '';
+  for (const ext of imageExts) {
+    const ct = IMAGE_CONTENT_TYPES['.' + ext];
+    if (ct) imgDefaults += `  <Default Extension="${ext}" ContentType="${ct}"/>\n`;
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+${imgDefaults}  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
 </Types>`;
+}
 
 const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
 
-function docxDocumentRels(hyperlinks) {
+function docxDocumentRels(hyperlinks, images) {
   let rels = `  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>`;
   hyperlinks.forEach((url, idx) => {
     rels += `\n  <Relationship Id="rId${idx + 3}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
+  });
+  const imgBase = hyperlinks.length + 3;
+  images.forEach((img, idx) => {
+    rels += `\n  <Relationship Id="rId${imgBase + idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${img.name}"/>`;
   });
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -753,7 +913,7 @@ const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
 </w:numbering>`;
 
-function inlineToWordML(children, links) {
+function inlineToWordML(children, links, images, inputPath) {
   return children.map(c => {
     const text = c.text || '';
     const needsSpace = text.startsWith(' ') || text.endsWith(' ');
@@ -769,32 +929,71 @@ function inlineToWordML(children, links) {
         const rId = `rId${links.length + 2}`;
         return `<w:hyperlink r:id="${rId}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>${esc(c.text)}</w:t></w:r></w:hyperlink>`;
       }
+      case 'image': {
+        if (!images || !inputPath) {
+          return `<w:r><w:rPr><w:i/></w:rPr><w:t>[Image: ${esc(c.alt || c.src)}]</w:t></w:r>`;
+        }
+        const imgData = resolveImage(c.src, inputPath);
+        if (!imgData) {
+          return `<w:r><w:rPr><w:i/></w:rPr><w:t>[Image: ${esc(c.alt || c.src)}]</w:t></w:r>`;
+        }
+        const imgName = `image${images.length + 1}${imgData.ext}`;
+        const rId = `rId${links.length + 3 + images.length}`;
+        images.push({ name: imgName, buffer: imgData.buffer });
+        const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
+        const h = imgData.height || Math.round(DEFAULT_IMG_H / PX_TO_EMU);
+        const { cx, cy } = fitImageEMU(w, h, 6.5 * 914400, 9 * 914400);
+        return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${images.length}" name="${esc(c.alt || imgName)}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="${esc(imgName)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+      }
       default: return `<w:r>${t}</w:r>`;
     }
   }).join('');
 }
 
-function astToDocxBody(ast, links) {
+function astToDocxBody(ast, links, images, inputPath) {
   let body = '';
+  let docPrId = 1; // unique ID counter for wp:docPr
+
+  // DOCX max image width: page width minus margins = 12240 - 2*1440 = 9360 twips = 6.5" = 5943600 EMU
+  const DOCX_IMG_MAX_W = 6.5 * 914400;
+  const DOCX_IMG_MAX_H = 9 * 914400;
 
   for (const node of ast) {
     switch (node.type) {
       case 'heading': {
         const level = Math.min(node.level, 6);
-        body += `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineToWordML(node.children, links)}</w:p>`;
+        body += `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath)}</w:p>`;
         break;
       }
       case 'paragraph':
-        body += `<w:p>${inlineToWordML(node.children, links)}</w:p>`;
+        body += `<w:p>${inlineToWordML(node.children, links, images, inputPath)}</w:p>`;
         break;
+      case 'image': {
+        const imgData = resolveImage(node.src, inputPath);
+        if (!imgData) {
+          body += `<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>[Image: ${esc(node.alt || node.src)}]</w:t></w:r></w:p>`;
+          break;
+        }
+        const imgName = `image${images.length + 1}${imgData.ext}`;
+        const rId = `rId${links.length + 3 + images.length}`;
+        images.push({ name: imgName, buffer: imgData.buffer });
+
+        const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
+        const h = imgData.height || Math.round(DEFAULT_IMG_H / PX_TO_EMU);
+        const { cx, cy } = fitImageEMU(w, h, DOCX_IMG_MAX_W, DOCX_IMG_MAX_H);
+        const dpId = docPrId++;
+
+        body += `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${dpId}" name="${esc(node.alt || imgName)}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="${esc(imgName)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+        break;
+      }
       case 'bullet_list':
         for (const item of node.items) {
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
         }
         break;
       case 'ordered_list':
         for (const item of node.items) {
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
         }
         break;
       case 'code_block':
@@ -807,7 +1006,7 @@ function astToDocxBody(ast, links) {
         break;
       case 'table': {
         const numCols = node.headers.length;
-        const colW = Math.floor(9360 / numCols); // US Letter minus margins in twips
+        const colW = Math.floor(9360 / numCols);
         const gridCols = node.headers.map(() => `<w:gridCol w:w="${colW}"/>`).join('');
         const borders = `<w:tblBorders>
           <w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>
@@ -837,13 +1036,21 @@ function astToDocxBody(ast, links) {
   return body;
 }
 
-function generateDocx(ast) {
+function generateDocx(ast, inputPath) {
   const links = [];
-  const bodyContent = astToDocxBody(ast, links);
+  const images = [];
+  const bodyContent = astToDocxBody(ast, links, images, inputPath);
+
+  // Collect unique image extensions
+  const imageExts = new Set();
+  for (const img of images) imageExts.add(img.name.split('.').pop());
 
   const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>
     ${bodyContent}
     <w:sectPr>
@@ -854,12 +1061,15 @@ function generateDocx(ast) {
 </w:document>`;
 
   const zip = new ZipWriter();
-  zip.addFile('[Content_Types].xml', DOCX_CONTENT_TYPES);
+  zip.addFile('[Content_Types].xml', docxContentTypes(imageExts));
   zip.addFile('_rels/.rels', DOCX_ROOT_RELS);
   zip.addFile('word/document.xml', document);
-  zip.addFile('word/_rels/document.xml.rels', docxDocumentRels(links));
+  zip.addFile('word/_rels/document.xml.rels', docxDocumentRels(links, images));
   zip.addFile('word/styles.xml', DOCX_STYLES);
   zip.addFile('word/numbering.xml', DOCX_NUMBERING);
+  for (const img of images) {
+    zip.addFile(`word/media/${img.name}`, img.buffer);
+  }
 
   return zip.toBuffer();
 }
@@ -915,8 +1125,10 @@ function main() {
 
   // Read input
   let md;
+  let inputPath = null;
   if (input) {
-    md = readFileSync(resolve(input), 'utf8');
+    inputPath = resolve(input);
+    md = readFileSync(inputPath, 'utf8');
   } else if (!process.stdin.isTTY) {
     md = readFileSync(0, 'utf8'); // stdin
   } else {
@@ -924,7 +1136,7 @@ function main() {
   }
 
   const ast = parseMarkdown(md);
-  const buf = format === 'pptx' ? generatePptx(ast) : generateDocx(ast);
+  const buf = format === 'pptx' ? generatePptx(ast, inputPath) : generateDocx(ast, inputPath);
   writeFileSync(resolve(output), buf);
 }
 

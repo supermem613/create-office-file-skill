@@ -29,6 +29,7 @@ This skill teaches AI coding agents to convert markdown into Office documents �
 - Fenced code blocks (` ``` `)
 - Tables (`| col | col |`)
 - Links (`[text](url)`)
+- Images (`![alt](path.png)`) — PNG and JPEG, local files
 - Horizontal rules (`---`) — slide break in PPTX, section break in DOCX
 - Inline code (`` `code` ``)
 
@@ -106,6 +107,17 @@ Tests validate file structure, markdown parsing, ZIP generation, CRC-32 correctn
 
 - **Node.js 18+** (the only requirement)
 - **Microsoft Office** (Word + PowerPoint) — only for evals, not for usage
+
+## Not Supported Yet
+
+| Feature | Why | Workaround |
+|---------|-----|-----------|
+| Nested lists (2+ levels) | Parser complexity vs. usage frequency | Single-level lists only |
+| Custom themes/colors | Hard-coded theme covers 95% of cases | Edit theme constant in script |
+| PDF output | Different format entirely | Use Office's "Save as PDF" |
+| Template-based editing | Script generates from scratch only | Edit generated file in Office |
+| Complex tables (merged cells) | OOXML complexity explosion | Simple grid tables only |
+| Remote images (URLs) | Keeps converter synchronous and offline | Pre-download images before conversion |
 
 ## Contributing
 

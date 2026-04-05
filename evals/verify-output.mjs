@@ -34,8 +34,12 @@ try {
   foreach ($slide in $pres.Slides) {
     $slideInfo = @{ index = $slide.SlideIndex; shapes = @() }
     foreach ($shape in $slide.Shapes) {
-      $shapeInfo = @{ name = $shape.Name; hasText = $false; hasTable = $false }
-      if ($shape.HasTable) {
+      $shapeInfo = @{ name = $shape.Name; hasText = $false; hasTable = $false; isPicture = $false; shapeType = $shape.Type }
+      if ($shape.Type -eq 13) {
+        $shapeInfo.isPicture = $true
+        $shapeInfo.hasText = $false
+      }
+      elseif ($shape.HasTable) {
         $shapeInfo.hasTable = $true
         $tbl = $shape.Table
         $shapeInfo.tableRows = $tbl.Rows.Count
@@ -93,13 +97,14 @@ $result | ConvertTo-Json -Depth 10 -Compress
 const docxScript = `
 $ErrorActionPreference = 'Stop'
 $path = '${absPath.replace(/'/g, "''")}'
-$result = @{ type = 'docx'; file = $path; paragraphs = @(); error = $null }
+$result = @{ type = 'docx'; file = $path; paragraphs = @(); error = $null; inlineShapeCount = 0 }
 try {
   $word = New-Object -ComObject Word.Application
   $word.Visible = $false
   $word.DisplayAlerts = 0
   $doc = $word.Documents.Open($path, $false, $true)
   $result.paragraphCount = $doc.Paragraphs.Count
+  $result.inlineShapeCount = $doc.InlineShapes.Count
   foreach ($para in $doc.Paragraphs) {
     $paraInfo = @{
       text = $para.Range.Text.TrimEnd([char]13)

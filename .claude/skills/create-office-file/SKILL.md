@@ -39,12 +39,13 @@ cat notes.md | node $SKILL_DIR/scripts/create-office-file.mjs -o notes.docx
 - Fenced code blocks (with language hint)
 - Tables (`| col | col |`)
 - Links (`[text](url)`)
+- Images (`![alt text](path/to/image.png)`) — PNG and JPEG, local files
 - Horizontal rules (`---`)
 - Inline code (`` `code` ``)
 
 ## Not Supported
 
-Nested emphasis, reference-style links, HTML-in-markdown, images (future), nested lists beyond one level.
+Nested emphasis, reference-style links, HTML-in-markdown, remote images (URLs), nested lists beyond one level.
 
 ## Reference Files
 

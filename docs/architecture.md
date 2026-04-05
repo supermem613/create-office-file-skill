@@ -62,6 +62,15 @@ DOCX is more forgiving — minimum viable is just 3 files.
 │                      ▲                │          │
 │               ZIP data               AST         │
 │                      │                │          │
+│  ┌──────────────┐    │                │          │
+│  │ Image Utils  │    │                │          │
+│  │ (65 ln)      │    │                │          │
+│  │ PNG/JPEG hdr │    │                │          │
+│  │ EMU sizing   │    │                │          │
+│  │ Path resolve │    │                │          │
+│  └──────┬───────┘    │                │          │
+│         │            │                │          │
+│         ▼            │                │          │
 │         ┌────────────┴───────┐        │          │
 │         │                    │        │          │
 │  ┌──────┴───────┐  ┌────────┴────┐   │          │
@@ -75,6 +84,7 @@ DOCX is more forgiving — minimum viable is just 3 files.
 │  │              │  │ Generated:  │               │
 │  │ Generated:   │  │ • document  │               │
 │  │ • slides     │  │   .xml body │               │
+│  │ • media/*    │  │ • media/*   │               │
 │  └──────────────┘  └─────────────┘               │
 │                                                   │
 │  ┌──────────────────────────────────────────────┐│
@@ -130,13 +140,3 @@ Uses `Word.Application` and `PowerPoint.Application` COM objects via PowerShell.
 | Verification approach | PowerShell COM | Uses actual Office apps — the ground truth |
 | Eval platform | Windows-only | COM automation requires Office; documented clearly |
 
-## What This Skill Cannot Do
-
-| Capability | Why | Workaround |
-|-----------|-----|-----------|
-| Images in documents | Requires binary embedding + relationships | Future enhancement |
-| Nested lists (2+ levels) | Parser complexity vs. usage frequency | Single-level lists only |
-| Custom themes/colors | Hard-coded theme covers 95% of cases | Edit theme constant in script |
-| PDF output | Different format entirely | Use Office's "Save as PDF" |
-| Template-based editing | Script generates from scratch only | Edit generated file in Office |
-| Complex tables (merged cells) | OOXML complexity explosion | Simple grid tables only |
