@@ -17,6 +17,16 @@ Reads from stdin if no `-i` is provided:
 cat notes.md | node $SKILL_DIR/scripts/create-office-file.mjs -o notes.docx
 ```
 
+### Custom Theme via Template
+
+Apply colors and fonts from an existing Office file:
+
+```bash
+node $SKILL_DIR/scripts/create-office-file.mjs -i input.md -o output.pptx --template corporate.pptx
+```
+
+The `--template` (`-t`) option extracts theme colors (12 OOXML scheme colors) and fonts (major/minor) from the provided `.pptx` or `.docx` file and applies them to the output. Cross-format works: a `.pptx` template can style a `.docx` output and vice versa.
+
 ## PPTX Slide Splitting
 
 | Markdown | Result |
@@ -45,7 +55,7 @@ cat notes.md | node $SKILL_DIR/scripts/create-office-file.mjs -o notes.docx
 
 ## Not Supported
 
-Nested emphasis, reference-style links, HTML-in-markdown, remote images (URLs), nested lists beyond 3 levels.
+Nested emphasis, reference-style links, HTML-in-markdown, remote images (URLs), nested lists beyond 3 levels, template slide/page layout passthrough (only theme colors and fonts are extracted).
 
 ## Reference Files
 

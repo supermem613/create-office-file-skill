@@ -330,6 +330,77 @@ Second paragraph with conclusions.
 
 ---
 
+## PPTX — Custom Theme (1)
+
+### Eval 25: PPTX with default theme opens correctly
+**Input markdown:**
+```markdown
+# Default Theme Test
+
+Some content with **bold** and *italic*.
+
+- Bullet item
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval25.pptx`
+**Verify:** `node $VER evals/results/eval25.pptx`
+**Pass if:** File opens without repair dialog; JSON contains shapes with text `Default Theme Test`, `Some content`; theme1.xml contains accent1 value `4472C4`
+
+## DOCX — Custom Theme (1)
+
+### Eval 26: DOCX with theme1.xml opens correctly
+**Input markdown:**
+```markdown
+# Document with Theme
+
+Paragraph with `inline code` and a [link](https://example.com).
+
+| Header1 | Header2 |
+|---------|---------|
+| Cell1   | Cell2   |
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval26.docx`
+**Verify:** `node $VER evals/results/eval26.docx`
+**Pass if:** File opens without repair dialog; JSON paragraphs contain `Document with Theme`, `Paragraph with`; document has theme relationship in rels
+
+## PPTX — Template Theme (1)
+
+### Eval 27: PPTX from template has custom colors
+**Setup:** Create a custom theme template:
+1. Create custom theme XML with accent1=`E94560`, accent2=`0F3460`, majorFont=`Georgia`, minorFont=`Verdana`
+2. Package into minimal PPTX ZIP with `ppt/theme/theme1.xml`
+3. Save as `evals/results/eval27_template.pptx`
+
+**Input markdown:**
+```markdown
+# Themed Presentation
+
+Content styled with custom theme.
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval27.pptx --template evals/results/eval27_template.pptx`
+**Verify:** `node $VER evals/results/eval27.pptx`
+**Pass if:** File opens without repair dialog; theme1.xml inside output contains `E94560` (accent1) and `Georgia` (majorFont); does NOT contain default `4472C4`
+
+## DOCX — Template Theme (1)
+
+### Eval 28: DOCX from template has custom styles
+**Setup:** Same template as eval 27.
+
+**Input markdown:**
+```markdown
+# Themed Document
+
+A paragraph with **bold text** and a code block:
+
+```javascript
+console.log("hello")
+```
+```
+**Generate:** `echo <markdown> | node $GEN -o evals/results/eval28.docx --template evals/results/eval27_template.pptx`
+**Verify:** `node $VER evals/results/eval28.docx`
+**Pass if:** File opens without repair dialog; styles.xml uses `Verdana` as default font; theme1.xml contains `E94560`
+
+---
+
 ## Report
 
 After completing all evals, write `evals/results/report.md`:
@@ -339,7 +410,7 @@ After completing all evals, write `evals/results/report.md`:
 
 **Platform:** Windows [version]
 **Office:** [Word/PowerPoint version]
-**Overall:** [passed]/24 ([percentage]%) — [failed] failed, [skipped] skipped
+**Overall:** [passed]/28 ([percentage]%) — [failed] failed, [skipped] skipped
 
 ## Summary
 
@@ -350,11 +421,13 @@ After completing all evals, write `evals/results/report.md`:
 | PPTX Content       |      |      |      | 2     |
 | PPTX Images        |      |      |      | 2     |
 | PPTX Nested Lists  |      |      |      | 1     |
+| PPTX Custom Theme  |      |      |      | 2     |
 | DOCX Structure     |      |      |      | 2     |
 | DOCX Formatting    |      |      |      | 4     |
 | DOCX Content       |      |      |      | 2     |
 | DOCX Images        |      |      |      | 2     |
 | DOCX Nested Lists  |      |      |      | 1     |
+| DOCX Custom Theme  |      |      |      | 2     |
 
 ## Results
 
@@ -384,6 +457,10 @@ After completing all evals, write `evals/results/report.md`:
 | 22 | Image + text (DOCX)   |       |       |
 | 23 | Nested list (PPTX)    |       |       |
 | 24 | Nested list (DOCX)    |       |       |
+| 25 | Default theme (PPTX)  |       |       |
+| 26 | Theme1.xml (DOCX)     |       |       |
+| 27 | Template theme (PPTX) |       |       |
+| 28 | Template theme (DOCX) |       |       |
 
 ## Failures
 [Details for any ❌]

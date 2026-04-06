@@ -6,7 +6,7 @@
 
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { resolve, extname, dirname, join, basename } from 'path';
-import { deflateRawSync } from 'zlib';
+import { deflateRawSync, inflateRawSync } from 'zlib';
 
 // ============================================================================
 // CRC-32 (lookup table, polynomial 0xEDB88320)
@@ -106,6 +106,59 @@ class ZipWriter {
 }
 
 // ============================================================================
+// ZIP Reader (for template extraction)
+// ============================================================================
+
+class ZipReader {
+  constructor(buffer) {
+    this.buf = buffer;
+    this.entries = this._parse();
+  }
+
+  _parse() {
+    const buf = this.buf;
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+      if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('Invalid ZIP: EOCD not found');
+    const cdSize = buf.readUInt32LE(eocd + 12);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+    const entries = new Map();
+    let pos = cdOffset;
+    while (pos < cdOffset + cdSize) {
+      if (buf.readUInt32LE(pos) !== 0x02014b50) break;
+      const method = buf.readUInt16LE(pos + 10);
+      const compSize = buf.readUInt32LE(pos + 20);
+      const nameLen = buf.readUInt16LE(pos + 28);
+      const extraLen = buf.readUInt16LE(pos + 30);
+      const commentLen = buf.readUInt16LE(pos + 32);
+      const localOffset = buf.readUInt32LE(pos + 42);
+      const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
+      entries.set(name, { method, compSize, localOffset });
+      pos += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+  }
+
+  getFile(name) {
+    const entry = this.entries.get(name);
+    if (!entry) return null;
+    const pos = entry.localOffset;
+    if (this.buf.readUInt32LE(pos) !== 0x04034b50) return null;
+    const nameLen = this.buf.readUInt16LE(pos + 26);
+    const extraLen = this.buf.readUInt16LE(pos + 28);
+    const dataStart = pos + 30 + nameLen + extraLen;
+    const raw = this.buf.subarray(dataStart, dataStart + entry.compSize);
+    if (entry.method === 0) return raw;
+    if (entry.method === 8) return inflateRawSync(raw);
+    return null;
+  }
+
+  listFiles() { return [...this.entries.keys()]; }
+}
+
+// ============================================================================
 // XML Utilities
 // ============================================================================
 
@@ -180,6 +233,177 @@ function resolveImage(imgPath, basePath) {
     const dims = readImageDimensions(buf);
     return { buffer: buf, ext, contentType, width: dims?.width || 0, height: dims?.height || 0 };
   } catch { return null; }
+}
+
+// ============================================================================
+// Theme Model (centralized colors, fonts — populated from defaults or template)
+// ============================================================================
+
+function defaultTheme() {
+  return {
+    colors: {
+      dk1: '000000', lt1: 'FFFFFF', dk2: '44546A', lt2: 'E7E6E6',
+      accent1: '4472C4', accent2: 'ED7D31', accent3: 'A5A5A5',
+      accent4: 'FFC000', accent5: '5B9BD5', accent6: '70AD47',
+      hlink: '0563C1', folHlink: '954F72',
+      heading: '2F5496', codeText: '2B2B2B', codeBg: 'F5F5F5',
+      inlineCodeBg: 'E8E8E8', tableHeaderFill: 'D9E2F3',
+    },
+    fonts: { major: 'Calibri Light', minor: 'Calibri', code: 'Consolas' },
+  };
+}
+
+function buildThemeXml(theme) {
+  const c = theme.colors;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
+  <a:themeElements>
+    <a:clrScheme name="Office">
+      <a:dk1><a:sysClr val="windowText" lastClr="${c.dk1}"/></a:dk1>
+      <a:lt1><a:sysClr val="window" lastClr="${c.lt1}"/></a:lt1>
+      <a:dk2><a:srgbClr val="${c.dk2}"/></a:dk2>
+      <a:lt2><a:srgbClr val="${c.lt2}"/></a:lt2>
+      <a:accent1><a:srgbClr val="${c.accent1}"/></a:accent1>
+      <a:accent2><a:srgbClr val="${c.accent2}"/></a:accent2>
+      <a:accent3><a:srgbClr val="${c.accent3}"/></a:accent3>
+      <a:accent4><a:srgbClr val="${c.accent4}"/></a:accent4>
+      <a:accent5><a:srgbClr val="${c.accent5}"/></a:accent5>
+      <a:accent6><a:srgbClr val="${c.accent6}"/></a:accent6>
+      <a:hlink><a:srgbClr val="${c.hlink}"/></a:hlink>
+      <a:folHlink><a:srgbClr val="${c.folHlink}"/></a:folHlink>
+    </a:clrScheme>
+    <a:fontScheme name="Office">
+      <a:majorFont><a:latin typeface="${theme.fonts.major}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
+      <a:minorFont><a:latin typeface="${theme.fonts.minor}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
+    </a:fontScheme>
+    <a:fmtScheme name="Office">
+      <a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>
+      <a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
+      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
+      <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>
+    </a:fmtScheme>
+  </a:themeElements>
+</a:theme>`;
+}
+
+function buildDocxStylesXml(theme) {
+  const c = theme.colors;
+  const f = theme.fonts;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:ascii="${f.minor}" w:hAnsi="${f.minor}" w:cs="${f.minor}"/>
+        <w:sz w:val="22"/>
+        <w:szCs w:val="22"/>
+        <w:lang w:val="en-US"/>
+      </w:rPr>
+    </w:rPrDefault>
+    <w:pPrDefault>
+      <w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr>
+    </w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:styleId="Normal" w:default="1">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="360" w:after="80"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/><w:color w:val="${c.heading}"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="36"/><w:szCs w:val="36"/><w:color w:val="${c.heading}"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading3">
+    <w:name w:val="heading 3"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="200" w:after="80"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="${c.heading}"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading4">
+    <w:name w:val="heading 4"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="160" w:after="40"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading5">
+    <w:name w:val="heading 5"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="120" w:after="40"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading6">
+    <w:name w:val="heading 6"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="120" w:after="40"/></w:pPr>
+    <w:rPr><w:b/><w:i/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="CodeBlock">
+    <w:name w:val="Code Block"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/><w:shd w:val="clear" w:color="auto" w:fill="${c.codeBg}"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="${f.code}" w:hAnsi="${f.code}" w:cs="${f.code}"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>
+  </w:style>
+  <w:style w:type="character" w:styleId="Hyperlink">
+    <w:name w:val="Hyperlink"/>
+    <w:rPr><w:color w:val="${c.hlink}"/><w:u w:val="single"/></w:rPr>
+  </w:style>
+</w:styles>`;
+}
+
+function parseThemeColors(xml) {
+  const colors = {};
+  for (const name of ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink']) {
+    let m = xml.match(new RegExp(`<a:${name}>\\s*<a:srgbClr\\s+val="([A-Fa-f0-9]{6})"`, 's'));
+    if (m) { colors[name] = m[1].toUpperCase(); continue; }
+    m = xml.match(new RegExp(`<a:${name}>\\s*<a:sysClr[^>]*lastClr="([A-Fa-f0-9]{6})"`, 's'));
+    if (m) colors[name] = m[1].toUpperCase();
+  }
+  return colors;
+}
+
+function parseThemeFonts(xml) {
+  const fonts = {};
+  const major = xml.match(/<a:majorFont>\s*<a:latin\s+typeface="([^"]+)"/s);
+  if (major) fonts.major = major[1];
+  const minor = xml.match(/<a:minorFont>\s*<a:latin\s+typeface="([^"]+)"/s);
+  if (minor) fonts.minor = minor[1];
+  return fonts;
+}
+
+function extractThemeFromTemplate(templatePath) {
+  const buf = readFileSync(templatePath);
+  const zip = new ZipReader(buf);
+  let themeXml = null;
+  for (const p of ['ppt/theme/theme1.xml', 'word/theme/theme1.xml']) {
+    const data = zip.getFile(p);
+    if (data) { themeXml = data.toString('utf8'); break; }
+  }
+  if (!themeXml) return {};
+  const overrides = {};
+  const colors = parseThemeColors(themeXml);
+  if (Object.keys(colors).length > 0) overrides.colors = colors;
+  const fonts = parseThemeFonts(themeXml);
+  if (Object.keys(fonts).length > 0) overrides.fonts = fonts;
+  return overrides;
+}
+
+function mergeTheme(base, overrides) {
+  return {
+    colors: { ...base.colors, ...(overrides.colors || {}) },
+    fonts: { ...base.fonts, ...(overrides.fonts || {}) },
+  };
 }
 
 // ============================================================================
@@ -399,36 +623,7 @@ ${sldIdLst}  </p:sldIdLst>
 </p:presentation>`;
 }
 
-// Minimal theme (Office-compatible)
-const PPTX_THEME = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
-  <a:themeElements>
-    <a:clrScheme name="Office">
-      <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
-      <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
-      <a:dk2><a:srgbClr val="44546A"/></a:dk2>
-      <a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>
-      <a:accent1><a:srgbClr val="4472C4"/></a:accent1>
-      <a:accent2><a:srgbClr val="ED7D31"/></a:accent2>
-      <a:accent3><a:srgbClr val="A5A5A5"/></a:accent3>
-      <a:accent4><a:srgbClr val="FFC000"/></a:accent4>
-      <a:accent5><a:srgbClr val="5B9BD5"/></a:accent5>
-      <a:accent6><a:srgbClr val="70AD47"/></a:accent6>
-      <a:hlink><a:srgbClr val="0563C1"/></a:hlink>
-      <a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
-    </a:clrScheme>
-    <a:fontScheme name="Office">
-      <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
-      <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
-    </a:fontScheme>
-    <a:fmtScheme name="Office">
-      <a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>
-      <a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
-      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
-      <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>
-    </a:fmtScheme>
-  </a:themeElements>
-</a:theme>`;
+// Theme XML and slide master/layout are now generated via buildThemeXml(theme)
 
 // Minimal slide master
 const PPTX_SLIDE_MASTER = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -488,14 +683,15 @@ function pptxSlideRels(links, images) {
 }
 
 // Convert inline AST nodes to DrawingML runs
-function inlineToDrawingML(children, baseSz, links) {
+function inlineToDrawingML(children, baseSz, links, theme) {
+  const codeFont = theme.fonts.code;
   return children.map(c => {
     const t = esc(c.text || '');
     switch (c.type) {
       case 'bold': return `<a:r><a:rPr lang="en-US" sz="${baseSz}" b="1" dirty="0"/><a:t>${t}</a:t></a:r>`;
       case 'italic': return `<a:r><a:rPr lang="en-US" sz="${baseSz}" i="1" dirty="0"/><a:t>${t}</a:t></a:r>`;
       case 'bold_italic': return `<a:r><a:rPr lang="en-US" sz="${baseSz}" b="1" i="1" dirty="0"/><a:t>${t}</a:t></a:r>`;
-      case 'code': return `<a:r><a:rPr lang="en-US" sz="${baseSz}" dirty="0"><a:latin typeface="Consolas"/><a:cs typeface="Consolas"/></a:rPr><a:t>${t}</a:t></a:r>`;
+      case 'code': return `<a:r><a:rPr lang="en-US" sz="${baseSz}" dirty="0"><a:latin typeface="${codeFont}"/><a:cs typeface="${codeFont}"/></a:rPr><a:t>${t}</a:t></a:r>`;
       case 'link': {
         links.push(c.url);
         const rId = `rId${links.length + 1}`;
@@ -506,9 +702,9 @@ function inlineToDrawingML(children, baseSz, links) {
   }).join('');
 }
 
-function buildTitleSlide(heading, shapeId) {
+function buildTitleSlide(heading, shapeId, theme) {
   const links = [];
-  const runs = inlineToDrawingML(heading.children, 4400, links);
+  const runs = inlineToDrawingML(heading.children, 4400, links, theme);
   const xml = `<p:sp>
   <p:nvSpPr><p:cNvPr id="${shapeId}" name="Title"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>
   <p:spPr>
@@ -524,9 +720,9 @@ function buildTitleSlide(heading, shapeId) {
   return { xml, links, images: [] };
 }
 
-function buildSlideTitleShape(title, shapeId, links) {
+function buildSlideTitleShape(title, shapeId, links, theme) {
   if (!title) return { xml: '', nextId: shapeId };
-  const runs = inlineToDrawingML(title.children, 2800, links);
+  const runs = inlineToDrawingML(title.children, 2800, links, theme);
   return { xml: `<p:sp>
   <p:nvSpPr><p:cNvPr id="${shapeId}" name="Title"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>
   <p:spPr>
@@ -541,10 +737,10 @@ function buildSlideTitleShape(title, shapeId, links) {
 </p:sp>`, nextId: shapeId + 1 };
 }
 
-function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
+function buildContentSlide(title, bodyNodes, startShapeId, inputPath, theme) {
   const links = [];
   const images = []; // { name, buffer, rId }
-  const { xml: titleShape, nextId } = buildSlideTitleShape(title, startShapeId, links);
+  const { xml: titleShape, nextId } = buildSlideTitleShape(title, startShapeId, links, theme);
   let shapeId = nextId;
 
   // Max image bounds within slide content area
@@ -560,14 +756,14 @@ function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
   for (const node of textNodes) {
     switch (node.type) {
       case 'paragraph':
-        bodyParas += `<a:p>${inlineToDrawingML(node.children, 1800, links)}</a:p>`;
+        bodyParas += `<a:p>${inlineToDrawingML(node.children, 1800, links, theme)}</a:p>`;
         break;
       case 'bullet_list': {
         const buChars = ['\u2022', '\u2013', '\u203A']; // •, –, ›
         for (const item of node.items) {
           const lvl = item.level || 0;
           const marL = 342900 + lvl * 457200;
-          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buChar char="${buChars[lvl] || buChars[0]}"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
+          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buChar char="${buChars[lvl] || buChars[0]}"/></a:pPr>${inlineToDrawingML(item.children, 1800, links, theme)}</a:p>`;
         }
         break;
       }
@@ -575,17 +771,17 @@ function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
         for (const item of node.items) {
           const lvl = item.level || 0;
           const marL = 342900 + lvl * 457200;
-          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buAutoNum type="arabicPeriod"/></a:pPr>${inlineToDrawingML(item.children, 1800, links)}</a:p>`;
+          bodyParas += `<a:p><a:pPr marL="${marL}" indent="-342900"><a:buAutoNum type="arabicPeriod"/></a:pPr>${inlineToDrawingML(item.children, 1800, links, theme)}</a:p>`;
         }
         break;
       }
       case 'code_block':
         for (const codeLine of node.text.split('\n')) {
-          bodyParas += `<a:p><a:r><a:rPr lang="en-US" sz="1400" dirty="0"><a:latin typeface="Consolas"/><a:cs typeface="Consolas"/><a:solidFill><a:srgbClr val="2B2B2B"/></a:solidFill></a:rPr><a:t>${esc(codeLine)}</a:t></a:r></a:p>`;
+          bodyParas += `<a:p><a:r><a:rPr lang="en-US" sz="1400" dirty="0"><a:latin typeface="${theme.fonts.code}"/><a:cs typeface="${theme.fonts.code}"/><a:solidFill><a:srgbClr val="${theme.colors.codeText}"/></a:solidFill></a:rPr><a:t>${esc(codeLine)}</a:t></a:r></a:p>`;
         }
         break;
       case 'heading':
-        bodyParas += `<a:p>${inlineToDrawingML(node.children, 2400, links)}</a:p>`;
+        bodyParas += `<a:p>${inlineToDrawingML(node.children, 2400, links, theme)}</a:p>`;
         break;
       default:
         break;
@@ -650,9 +846,9 @@ function buildContentSlide(title, bodyNodes, startShapeId, inputPath) {
   return { xml: titleShape + '\n' + bodyShape + imgShapes, links, images };
 }
 
-function buildTableSlide(title, table, startShapeId) {
+function buildTableSlide(title, table, startShapeId, theme) {
   const links = [];
-  const { xml: titleShape, nextId } = buildSlideTitleShape(title, startShapeId, links);
+  const { xml: titleShape, nextId } = buildSlideTitleShape(title, startShapeId, links, theme);
   let shapeId = nextId;
 
   const numCols = table.headers.length;
@@ -706,7 +902,7 @@ function wrapSlide(innerXml) {
 </p:sld>`;
 }
 
-function astToSlides(ast, inputPath) {
+function astToSlides(ast, inputPath, theme) {
   const slides = []; // [{ xml, links, images }]
   let currentTitle = null;
   let currentBody = [];
@@ -718,11 +914,11 @@ function astToSlides(ast, inputPath) {
     const nonTableBody = currentBody.filter(n => n.type !== 'table');
     let result;
     if (tableNode && nonTableBody.length === 0) {
-      result = buildTableSlide(currentTitle, tableNode, 2);
+      result = buildTableSlide(currentTitle, tableNode, 2, theme);
     } else if (currentTitle && currentTitle.level === 1 && currentBody.length === 0) {
-      result = buildTitleSlide(currentTitle, 2);
+      result = buildTitleSlide(currentTitle, 2, theme);
     } else {
-      result = buildContentSlide(currentTitle, currentBody, 2, inputPath);
+      result = buildContentSlide(currentTitle, currentBody, 2, inputPath, theme);
     }
     slides.push({ xml: wrapSlide(result.xml), links: result.links, images: result.images || [] });
     currentTitle = null;
@@ -753,8 +949,8 @@ function astToSlides(ast, inputPath) {
   return slides;
 }
 
-function generatePptx(ast, inputPath) {
-  const slides = astToSlides(ast, inputPath);
+function generatePptx(ast, inputPath, theme) {
+  const slides = astToSlides(ast, inputPath, theme);
   const zip = new ZipWriter();
 
   // Collect all unique image extensions for content types
@@ -771,7 +967,7 @@ function generatePptx(ast, inputPath) {
   zip.addFile('_rels/.rels', PPTX_ROOT_RELS);
   zip.addFile('ppt/presentation.xml', pptxPresentation(slides.length));
   zip.addFile('ppt/_rels/presentation.xml.rels', pptxPresentationRels(slides.length));
-  zip.addFile('ppt/theme/theme1.xml', PPTX_THEME);
+  zip.addFile('ppt/theme/theme1.xml', buildThemeXml(theme));
   zip.addFile('ppt/slideMasters/slideMaster1.xml', PPTX_SLIDE_MASTER);
   zip.addFile('ppt/slideMasters/_rels/slideMaster1.xml.rels', PPTX_SLIDE_MASTER_RELS);
   zip.addFile('ppt/slideLayouts/slideLayout1.xml', PPTX_SLIDE_LAYOUT);
@@ -805,6 +1001,7 @@ function docxContentTypes(imageExts) {
 ${imgDefaults}  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
 </Types>`;
 }
 
@@ -815,11 +1012,12 @@ const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 function docxDocumentRels(hyperlinks, images) {
   let rels = `  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>`;
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>`;
   hyperlinks.forEach((url, idx) => {
-    rels += `\n  <Relationship Id="rId${idx + 3}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
+    rels += `\n  <Relationship Id="rId${idx + 4}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
   });
-  const imgBase = hyperlinks.length + 3;
+  const imgBase = hyperlinks.length + 4;
   images.forEach((img, idx) => {
     rels += `\n  <Relationship Id="rId${imgBase + idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${img.name}"/>`;
   });
@@ -829,77 +1027,7 @@ ${rels}
 </Relationships>`;
 }
 
-const DOCX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:docDefaults>
-    <w:rPrDefault>
-      <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>
-        <w:sz w:val="22"/>
-        <w:szCs w:val="22"/>
-        <w:lang w:val="en-US"/>
-      </w:rPr>
-    </w:rPrDefault>
-    <w:pPrDefault>
-      <w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr>
-    </w:pPrDefault>
-  </w:docDefaults>
-  <w:style w:type="paragraph" w:styleId="Normal" w:default="1">
-    <w:name w:val="Normal"/>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading1">
-    <w:name w:val="heading 1"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="360" w:after="80"/></w:pPr>
-    <w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/><w:color w:val="2F5496"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2">
-    <w:name w:val="heading 2"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/></w:pPr>
-    <w:rPr><w:b/><w:sz w:val="36"/><w:szCs w:val="36"/><w:color w:val="2F5496"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading3">
-    <w:name w:val="heading 3"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="200" w:after="80"/></w:pPr>
-    <w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="2F5496"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading4">
-    <w:name w:val="heading 4"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="160" w:after="40"/></w:pPr>
-    <w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading5">
-    <w:name w:val="heading 5"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="120" w:after="40"/></w:pPr>
-    <w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading6">
-    <w:name w:val="heading 6"/>
-    <w:basedOn w:val="Normal"/>
-    <w:next w:val="Normal"/>
-    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="120" w:after="40"/></w:pPr>
-    <w:rPr><w:b/><w:i/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="CodeBlock">
-    <w:name w:val="Code Block"/>
-    <w:basedOn w:val="Normal"/>
-    <w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/><w:shd w:val="clear" w:color="auto" w:fill="F5F5F5"/></w:pPr>
-    <w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>
-  </w:style>
-  <w:style w:type="character" w:styleId="Hyperlink">
-    <w:name w:val="Hyperlink"/>
-    <w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>
-  </w:style>
-</w:styles>`;
+// DOCX styles are now generated via buildDocxStylesXml(theme)
 
 const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -958,7 +1086,7 @@ const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
 </w:numbering>`;
 
-function inlineToWordML(children, links, images, inputPath) {
+function inlineToWordML(children, links, images, inputPath, theme) {
   return children.map(c => {
     const text = c.text || '';
     const needsSpace = text.startsWith(' ') || text.endsWith(' ');
@@ -968,10 +1096,10 @@ function inlineToWordML(children, links, images, inputPath) {
       case 'bold': return `<w:r><w:rPr><w:b/></w:rPr>${t}</w:r>`;
       case 'italic': return `<w:r><w:rPr><w:i/></w:rPr>${t}</w:r>`;
       case 'bold_italic': return `<w:r><w:rPr><w:b/><w:i/></w:rPr>${t}</w:r>`;
-      case 'code': return `<w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:shd w:val="clear" w:color="auto" w:fill="E8E8E8"/></w:rPr>${t}</w:r>`;
+      case 'code': return `<w:r><w:rPr><w:rFonts w:ascii="${theme.fonts.code}" w:hAnsi="${theme.fonts.code}" w:cs="${theme.fonts.code}"/><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.inlineCodeBg}"/></w:rPr>${t}</w:r>`;
       case 'link': {
         links.push(c.url);
-        const rId = `rId${links.length + 2}`;
+        const rId = `rId${links.length + 3}`;
         return `<w:hyperlink r:id="${rId}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>${esc(c.text)}</w:t></w:r></w:hyperlink>`;
       }
       case 'image': {
@@ -983,7 +1111,7 @@ function inlineToWordML(children, links, images, inputPath) {
           return `<w:r><w:rPr><w:i/></w:rPr><w:t>[Image: ${esc(c.alt || c.src)}]</w:t></w:r>`;
         }
         const imgName = `image${images.length + 1}${imgData.ext}`;
-        const rId = `rId${links.length + 3 + images.length}`;
+        const rId = `rId${links.length + 4 + images.length}`;
         images.push({ name: imgName, buffer: imgData.buffer });
         const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
         const h = imgData.height || Math.round(DEFAULT_IMG_H / PX_TO_EMU);
@@ -995,7 +1123,7 @@ function inlineToWordML(children, links, images, inputPath) {
   }).join('');
 }
 
-function astToDocxBody(ast, links, images, inputPath) {
+function astToDocxBody(ast, links, images, inputPath, theme) {
   let body = '';
   let docPrId = 1; // unique ID counter for wp:docPr
 
@@ -1007,11 +1135,11 @@ function astToDocxBody(ast, links, images, inputPath) {
     switch (node.type) {
       case 'heading': {
         const level = Math.min(node.level, 6);
-        body += `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath)}</w:p>`;
+        body += `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath, theme)}</w:p>`;
         break;
       }
       case 'paragraph':
-        body += `<w:p>${inlineToWordML(node.children, links, images, inputPath)}</w:p>`;
+        body += `<w:p>${inlineToWordML(node.children, links, images, inputPath, theme)}</w:p>`;
         break;
       case 'image': {
         const imgData = resolveImage(node.src, inputPath);
@@ -1020,7 +1148,7 @@ function astToDocxBody(ast, links, images, inputPath) {
           break;
         }
         const imgName = `image${images.length + 1}${imgData.ext}`;
-        const rId = `rId${links.length + 3 + images.length}`;
+        const rId = `rId${links.length + 4 + images.length}`;
         images.push({ name: imgName, buffer: imgData.buffer });
 
         const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
@@ -1034,18 +1162,18 @@ function astToDocxBody(ast, links, images, inputPath) {
       case 'bullet_list':
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme)}</w:p>`;
         }
         break;
       case 'ordered_list':
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme)}</w:p>`;
         }
         break;
       case 'code_block':
         for (const line of node.text.split('\n')) {
-          body += `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`;
+          body += `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="${theme.fonts.code}" w:hAnsi="${theme.fonts.code}" w:cs="${theme.fonts.code}"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`;
         }
         break;
       case 'hr':
@@ -1065,7 +1193,7 @@ function astToDocxBody(ast, links, images, inputPath) {
         </w:tblBorders>`;
 
         const headerRow = `<w:tr>${node.headers.map(h =>
-          `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="D9E2F3"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${esc(h)}</w:t></w:r></w:p></w:tc>`
+          `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.tableHeaderFill}"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${esc(h)}</w:t></w:r></w:p></w:tc>`
         ).join('')}</w:tr>`;
 
         const dataRows = node.rows.map(row =>
@@ -1083,10 +1211,10 @@ function astToDocxBody(ast, links, images, inputPath) {
   return body;
 }
 
-function generateDocx(ast, inputPath) {
+function generateDocx(ast, inputPath, theme) {
   const links = [];
   const images = [];
-  const bodyContent = astToDocxBody(ast, links, images, inputPath);
+  const bodyContent = astToDocxBody(ast, links, images, inputPath, theme);
 
   // Collect unique image extensions
   const imageExts = new Set();
@@ -1112,8 +1240,9 @@ function generateDocx(ast, inputPath) {
   zip.addFile('_rels/.rels', DOCX_ROOT_RELS);
   zip.addFile('word/document.xml', document);
   zip.addFile('word/_rels/document.xml.rels', docxDocumentRels(links, images));
-  zip.addFile('word/styles.xml', DOCX_STYLES);
+  zip.addFile('word/styles.xml', buildDocxStylesXml(theme));
   zip.addFile('word/numbering.xml', DOCX_NUMBERING);
+  zip.addFile('word/theme/theme1.xml', buildThemeXml(theme));
   for (const img of images) {
     zip.addFile(`word/media/${img.name}`, img.buffer);
   }
@@ -1129,21 +1258,23 @@ function usage() {
   console.error(`Usage: node create-office-file.mjs [options]
 
 Options:
-  -i, --input <file>     Input markdown file (or reads stdin)
-  -o, --output <file>    Output file path (required)
-  -f, --format <fmt>     Output format: pptx or docx (auto-detected from -o extension)
-  -h, --help             Show this help
+  -i, --input <file>       Input markdown file (or reads stdin)
+  -o, --output <file>      Output file path (required)
+  -f, --format <fmt>       Output format: pptx or docx (auto-detected from -o extension)
+  -t, --template <file>    Template .pptx or .docx file (extracts theme colors and fonts)
+  -h, --help               Show this help
 
 Examples:
   node create-office-file.mjs -i slides.md -o presentation.pptx
   node create-office-file.mjs -i report.md -o document.docx
+  node create-office-file.mjs -i slides.md -o out.pptx --template corporate.pptx
   cat notes.md | node create-office-file.mjs -o notes.docx`);
   process.exit(1);
 }
 
 function main() {
   const args = process.argv.slice(2);
-  let input = null, output = null, format = null;
+  let input = null, output = null, format = null, template = null;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -1153,6 +1284,7 @@ function main() {
         format = args[++i];
         if (format !== 'pptx' && format !== 'docx') { console.error(`Error: unsupported format '${format}', use pptx or docx`); usage(); }
         break;
+      case '-t': case '--template': template = args[++i]; break;
       case '-h': case '--help': usage(); break;
       default:
         if (!output && args[i].match(/\.(pptx|docx)$/i)) output = args[i];
@@ -1170,6 +1302,19 @@ function main() {
     else { console.error('Error: cannot detect format, use -f pptx or -f docx'); usage(); }
   }
 
+  // Build theme (defaults + optional template overrides)
+  let theme = defaultTheme();
+  if (template) {
+    const templatePath = resolve(template);
+    if (!existsSync(templatePath)) { console.error(`Error: template file not found: ${template}`); process.exit(1); }
+    try {
+      const overrides = extractThemeFromTemplate(templatePath);
+      theme = mergeTheme(theme, overrides);
+    } catch (e) {
+      console.error(`Error: failed to read template: ${e.message}`); process.exit(1);
+    }
+  }
+
   // Read input
   let md;
   let inputPath = null;
@@ -1183,7 +1328,7 @@ function main() {
   }
 
   const ast = parseMarkdown(md);
-  const buf = format === 'pptx' ? generatePptx(ast, inputPath) : generateDocx(ast, inputPath);
+  const buf = format === 'pptx' ? generatePptx(ast, inputPath, theme) : generateDocx(ast, inputPath, theme);
   writeFileSync(resolve(output), buf);
 }
 

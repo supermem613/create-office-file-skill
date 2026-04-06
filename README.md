@@ -22,6 +22,16 @@ This skill teaches AI coding agents to convert markdown into Office documents â€
 - *"Create a DOCX with headings, formatted text, numbered lists, and tables"*
 - *"Turn this README into a Word document I can email"*
 
+### Custom Themes
+
+Have a corporate template you want to match? Just tell the agent:
+
+- *"Create a presentation from these notes, using the colors and fonts from corporate.pptx"*
+- *"Convert this markdown to a Word doc styled like our brand-template.docx"*
+- *"Make a slide deck about Q3 results, themed to match marketing.pptx"*
+
+The agent uses the `--template` option under the hood to extract theme colors and fonts from any existing `.pptx` or `.docx` file. Cross-format works â€” a `.pptx` template can style a `.docx` output.
+
 ### Supported Markdown
 - Headings (`#` through `######`)
 - Bold (`**text**`), Italic (`*text*`), Bold+Italic (`***text***`)
@@ -113,11 +123,13 @@ Tests validate file structure, markdown parsing, ZIP generation, CRC-32 correctn
 | Feature | Why | Workaround |
 |---------|-----|-----------|
 | Nested lists (3+ levels) | 3 levels covers virtually all real usage | Flatten deeper nesting to level 3 |
-| Custom themes/colors | Hard-coded theme covers 95% of cases | Edit theme constant in script |
 | PDF output | Different format entirely | Use Office's "Save as PDF" |
-| Template-based editing | Script generates from scratch only | Edit generated file in Office |
+| Template slide layouts | Script generates structure from scratch | Edit generated file in Office |
 | Complex tables (merged cells) | OOXML complexity explosion | Simple grid tables only |
 | Remote images (URLs) | Keeps converter synchronous and offline | Pre-download images before conversion |
+| Nested emphasis | Regex parser limitation | Use single emphasis level per span |
+| Reference-style links | Rarely used in AI-generated content | Use inline links |
+| HTML-in-markdown | Security and complexity concerns | Use pure markdown |
 
 ## Contributing
 

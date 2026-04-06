@@ -42,6 +42,7 @@ word/document.xml                   ← content goes here
 word/_rels/document.xml.rels
 word/styles.xml                     ← heading/code styles
 word/numbering.xml                  ← bullet/numbered list defs
+word/theme/theme1.xml               ← theme colors and fonts
 ```
 
 DOCX is more forgiving — minimum viable is just 3 files.
@@ -49,49 +50,88 @@ DOCX is more forgiving — minimum viable is just 3 files.
 ## Script Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│         scripts/create-office-file.mjs              │
-│                                                   │
-│  ┌──────────┐  ┌────────────┐  ┌──────────────┐ │
-│  │ CRC-32   │  │ ZipWriter  │  │ Markdown     │ │
-│  │ (25 ln)  │  │ (100 ln)   │  │ Parser       │ │
-│  │          │  │ Buffer +   │  │ (250 ln)     │ │
-│  │ Lookup   │  │ zlib +     │  │ Regex-based  │ │
-│  │ table    │  │ deflateRaw │  │ MD → AST     │ │
-│  └──────────┘  └────────────┘  └──────┬───────┘ │
-│                      ▲                │          │
-│               ZIP data               AST         │
-│                      │                │          │
-│  ┌──────────────┐    │                │          │
-│  │ Image Utils  │    │                │          │
-│  │ (65 ln)      │    │                │          │
-│  │ PNG/JPEG hdr │    │                │          │
-│  │ EMU sizing   │    │                │          │
-│  │ Path resolve │    │                │          │
-│  └──────┬───────┘    │                │          │
-│         │            │                │          │
-│         ▼            │                │          │
-│         ┌────────────┴───────┐        │          │
-│         │                    │        │          │
-│  ┌──────┴───────┐  ┌────────┴────┐   │          │
-│  │ PPTX Gen     │  │ DOCX Gen    │   │          │
-│  │ (400 ln)     │  │ (300 ln)    │◀──┘          │
-│  │              │  │             │               │
-│  │ Hard-coded:  │  │ Hard-coded: │               │
-│  │ • SlideMstr  │  │ • styles    │               │
-│  │ • SlideLayout│  │ • numbering │               │
-│  │ • Theme      │  │             │               │
-│  │              │  │ Generated:  │               │
-│  │ Generated:   │  │ • document  │               │
-│  │ • slides     │  │   .xml body │               │
-│  │ • media/*    │  │ • media/*   │               │
-│  └──────────────┘  └─────────────┘               │
-│                                                   │
-│  ┌──────────────────────────────────────────────┐│
-│  │ CLI: -i input.md -o output.pptx|docx         ││
-│  └──────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│         scripts/create-office-file.mjs                  │
+│                                                       │
+│  ┌──────────┐  ┌────────────┐  ┌──────────────┐     │
+│  │ CRC-32   │  │ ZipWriter  │  │ Markdown     │     │
+│  │ (25 ln)  │  │ (100 ln)   │  │ Parser       │     │
+│  │          │  │ Buffer +   │  │ (250 ln)     │     │
+│  │ Lookup   │  │ zlib +     │  │ Regex-based  │     │
+│  │ table    │  │ deflateRaw │  │ MD → AST     │     │
+│  └──────────┘  └────────────┘  └──────┬───────┘     │
+│                      ▲                │              │
+│               ZIP data               AST             │
+│                      │                │              │
+│  ┌──────────────┐    │   ┌────────────┴──────────┐  │
+│  │ Image Utils  │    │   │ Theme Model (170 ln)  │  │
+│  │ (65 ln)      │    │   │                       │  │
+│  │ PNG/JPEG hdr │    │   │ defaultTheme()        │  │
+│  │ EMU sizing   │    │   │ buildThemeXml(theme)   │  │
+│  │ Path resolve │    │   │ buildDocxStylesXml()   │  │
+│  └──────┬───────┘    │   │ parseThemeColors()     │  │
+│         │            │   │ parseThemeFonts()      │  │
+│         │            │   │ extractThemeFromTpl()   │  │
+│         ▼            │   │ mergeTheme()           │  │
+│         ┌────────────┴───┴───────┐                   │
+│         │                        │                   │
+│  ┌──────┴───────┐  ┌────────────┴─┐                 │
+│  │ PPTX Gen     │  │ DOCX Gen     │                 │
+│  │ (400 ln)     │  │ (300 ln)     │                 │
+│  │              │  │              │                 │
+│  │ Theme-aware: │  │ Theme-aware: │                 │
+│  │ • SlideMstr  │  │ • styles.xml │                 │
+│  │ • SlideLayout│  │ • numbering  │                 │
+│  │ • theme.xml  │  │ • theme.xml  │                 │
+│  │              │  │              │                 │
+│  │ Generated:   │  │ Generated:   │                 │
+│  │ • slides     │  │ • document   │                 │
+│  │ • media/*    │  │ • media/*    │                 │
+│  └──────────────┘  └──────────────┘                 │
+│                                                       │
+│  ┌──────────────┐                                    │
+│  │ ZipReader    │◀── --template option               │
+│  │ (50 ln)      │    reads .pptx/.docx               │
+│  │ inflateRaw   │    extracts theme1.xml             │
+│  └──────────────┘                                    │
+│                                                       │
+│  ┌──────────────────────────────────────────────────┐│
+│  │ CLI: -i input.md -o output.pptx|docx [-t tpl]   ││
+│  └──────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────┘
 ```
+
+## Theme Model
+
+All colors and fonts flow through a centralized theme object:
+
+```
+defaultTheme() ──────────────────────────────┐
+                                             │
+--template file.pptx ─► ZipReader            │
+  ─► extractThemeFromTemplate()              │
+    ─► parseThemeColors() + parseThemeFonts()│
+      ─► mergeTheme(defaults, extracted) ────┤
+                                             ▼
+                                         theme object
+                                    ┌────────┴────────┐
+                                    │  colors:        │
+                                    │   12 OOXML      │
+                                    │   + derived     │
+                                    │  fonts:         │
+                                    │   major, minor  │
+                                    │   code          │
+                                    └────────┬────────┘
+                             ┌───────────────┼───────────────┐
+                             ▼               ▼               ▼
+                      buildThemeXml   buildDocxStyles   inline content
+                      (theme1.xml)    (styles.xml)      (font/color refs)
+```
+
+**Key design rules:**
+- Only the 12 standard OOXML theme colors + 2 fonts are extracted from templates. Derived colors (heading, codeBg, tableHeaderFill) stay at defaults — prevents unexpected style shifts.
+- Template extraction reads VALUES only — never imports foreign XML wholesale. This avoids relationship ID conflicts.
+- Cross-format templates work: a PPTX template can style DOCX output (theme1.xml schema is identical).
 
 ## Template-Constrained Design
 
@@ -139,4 +179,7 @@ Uses `Word.Application` and `PowerPoint.Application` COM objects via PowerShell.
 | DOCX heading mapping | `# = Heading1` through `######` = Heading6 | Standard convention |
 | Verification approach | PowerShell COM | Uses actual Office apps — the ground truth |
 | Eval platform | Windows-only | COM automation requires Office; documented clearly |
+| Theme model | Centralized token object | 3-lens evaluation (Skeptic/Architect/Pragmatist) converged on B+ |
+| Template extraction | Parse values only, never import foreign XML | Avoids relationship ID conflicts and broken references |
+| Cross-format templates | PPTX template → DOCX output works | theme1.xml uses identical DrawingML schema |
 

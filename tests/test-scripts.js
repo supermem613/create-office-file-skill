@@ -756,3 +756,286 @@ describe('Nested lists — coexistence', () => {
     assert.ok(doc.includes('w:ilvl w:val="2"'), 'Should have level 2');
   });
 });
+
+// ============================================================================
+// Theme token model
+// ============================================================================
+
+/**
+ * Generate with a template file.
+ */
+function generateWithTemplate(md, format, templatePath) {
+  const outFile = join(__dirname, `_test_output_themed.${format}`);
+  try {
+    execSync(`node "${script}" -f ${format} -o "${outFile}" --template "${templatePath}"`, {
+      input: md, encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return readFileSync(outFile);
+  } finally {
+    try { require('fs').unlinkSync(outFile); } catch {}
+  }
+}
+
+/**
+ * Create a minimal PPTX ZIP with a custom theme1.xml for testing.
+ */
+function createTestTemplate(themeXml) {
+  const { deflateRawSync } = require('zlib');
+
+  function crc32Test(buf) {
+    if (typeof buf === 'string') buf = Buffer.from(buf, 'utf8');
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  const files = [
+    { name: 'ppt/theme/theme1.xml', data: Buffer.from(themeXml, 'utf8') },
+    { name: '[Content_Types].xml', data: Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>', 'utf8') },
+  ];
+  const localHeaders = [];
+  const centralHeaders = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, 'utf8');
+    const compressed = deflateRawSync(f.data);
+    const useDeflate = compressed.length < f.data.length;
+    const stored = useDeflate ? compressed : f.data;
+    const method = useDeflate ? 8 : 0;
+    const crc = crc32Test(f.data);
+
+    const local = Buffer.alloc(30 + nameBuf.length + stored.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(stored.length, 18);
+    local.writeUInt32LE(f.data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    nameBuf.copy(local, 30);
+    stored.copy(local, 30 + nameBuf.length);
+    localHeaders.push(local);
+
+    const central = Buffer.alloc(46 + nameBuf.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(method, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(stored.length, 20);
+    central.writeUInt32LE(f.data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt32LE(offset, 42);
+    nameBuf.copy(central, 46);
+    centralHeaders.push(central);
+
+    offset += local.length;
+  }
+  const cdOffset = offset;
+  const cdSize = centralHeaders.reduce((s, b) => s + b.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdSize, 12);
+  eocd.writeUInt32LE(cdOffset, 16);
+  return Buffer.concat([...localHeaders, ...centralHeaders, eocd]);
+}
+
+describe('Theme token model — defaults', () => {
+  it('PPTX theme XML contains default Office colors', () => {
+    const buf = generate('# Hello', 'pptx');
+    const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+    assert.ok(theme.includes('val="4472C4"'), 'accent1');
+    assert.ok(theme.includes('val="ED7D31"'), 'accent2');
+    assert.ok(theme.includes('lastClr="000000"'), 'dk1');
+    assert.ok(theme.includes('lastClr="FFFFFF"'), 'lt1');
+  });
+
+  it('PPTX theme XML contains default fonts', () => {
+    const buf = generate('# Hello', 'pptx');
+    const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+    assert.ok(theme.includes('typeface="Calibri Light"'), 'major font');
+    assert.ok(theme.includes('typeface="Calibri"'), 'minor font');
+  });
+
+  it('DOCX styles.xml uses default heading color', () => {
+    const buf = generate('# Hello', 'docx');
+    const styles = zipExtract(buf, 'word/styles.xml');
+    assert.ok(styles.includes('w:val="2F5496"'), 'heading color');
+  });
+
+  it('DOCX now includes theme1.xml', () => {
+    const buf = generate('# Hello', 'docx');
+    const entries = zipEntries(buf);
+    assert.ok(entries.includes('word/theme/theme1.xml'), 'Should have theme file');
+    const theme = zipExtract(buf, 'word/theme/theme1.xml');
+    assert.ok(theme.includes('val="4472C4"'), 'accent1 in DOCX theme');
+  });
+
+  it('DOCX content types includes theme override', () => {
+    const buf = generate('# Hello', 'docx');
+    const ct = zipExtract(buf, '[Content_Types].xml');
+    assert.ok(ct.includes('theme+xml'), 'Should have theme content type');
+  });
+
+  it('DOCX document rels includes theme relationship', () => {
+    const buf = generate('# Hello', 'docx');
+    const rels = zipExtract(buf, 'word/_rels/document.xml.rels');
+    assert.ok(rels.includes('theme/theme1.xml'), 'Should reference theme');
+    assert.ok(rels.includes('rId3'), 'Theme should be rId3');
+  });
+
+  it('PPTX code block uses theme code font and color', () => {
+    const buf = generate('## Code\n```\nlet x = 1;\n```', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    assert.ok(slide.includes('typeface="Consolas"'), 'default code font');
+    assert.ok(slide.includes('val="2B2B2B"'), 'default code text color');
+  });
+
+  it('DOCX inline code uses theme code font and bg', () => {
+    const buf = generate('Use `code` here', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:ascii="Consolas"'), 'default code font');
+    assert.ok(doc.includes('w:fill="E8E8E8"'), 'default inline code bg');
+  });
+
+  it('DOCX table header uses theme fill color', () => {
+    const buf = generate('| H1 | H2 |\n|---|---|\n| a | b |', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('w:fill="D9E2F3"'), 'default table header fill');
+  });
+});
+
+describe('Theme token model — template extraction', () => {
+  const customThemeXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Custom">
+  <a:themeElements>
+    <a:clrScheme name="Custom">
+      <a:dk1><a:srgbClr val="1A1A2E"/></a:dk1>
+      <a:lt1><a:srgbClr val="EAEAEA"/></a:lt1>
+      <a:dk2><a:srgbClr val="16213E"/></a:dk2>
+      <a:lt2><a:srgbClr val="C8C8C8"/></a:lt2>
+      <a:accent1><a:srgbClr val="E94560"/></a:accent1>
+      <a:accent2><a:srgbClr val="0F3460"/></a:accent2>
+      <a:accent3><a:srgbClr val="533483"/></a:accent3>
+      <a:accent4><a:srgbClr val="E94560"/></a:accent4>
+      <a:accent5><a:srgbClr val="16213E"/></a:accent5>
+      <a:accent6><a:srgbClr val="1A1A2E"/></a:accent6>
+      <a:hlink><a:srgbClr val="E94560"/></a:hlink>
+      <a:folHlink><a:srgbClr val="533483"/></a:folHlink>
+    </a:clrScheme>
+    <a:fontScheme name="Custom">
+      <a:majorFont><a:latin typeface="Georgia"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
+      <a:minorFont><a:latin typeface="Verdana"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
+    </a:fontScheme>
+    <a:fmtScheme name="Custom">
+      <a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>
+      <a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>
+      <a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>
+      <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>
+    </a:fmtScheme>
+  </a:themeElements>
+</a:theme>`;
+
+  let templatePath;
+
+  // Create a test template file before tests
+  it('setup: create test template', () => {
+    const templateBuf = createTestTemplate(customThemeXml);
+    templatePath = join(__dirname, '_test_template.pptx');
+    require('fs').writeFileSync(templatePath, templateBuf);
+    assert.ok(existsSync(templatePath), 'Template should exist');
+  });
+
+  it('PPTX with template uses custom accent colors', () => {
+    const buf = generateWithTemplate('# Custom Theme Test', 'pptx', templatePath);
+    const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+    assert.ok(theme.includes('val="E94560"'), 'accent1 should be E94560');
+    assert.ok(theme.includes('val="0F3460"'), 'accent2 should be 0F3460');
+    assert.ok(!theme.includes('val="4472C4"'), 'should NOT have default accent1');
+  });
+
+  it('PPTX with template uses custom fonts', () => {
+    const buf = generateWithTemplate('# Custom Font', 'pptx', templatePath);
+    const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+    assert.ok(theme.includes('typeface="Georgia"'), 'major font should be Georgia');
+    assert.ok(theme.includes('typeface="Verdana"'), 'minor font should be Verdana');
+  });
+
+  it('DOCX with template uses custom theme colors', () => {
+    const buf = generateWithTemplate('# Themed Doc', 'docx', templatePath);
+    const theme = zipExtract(buf, 'word/theme/theme1.xml');
+    assert.ok(theme.includes('val="E94560"'), 'accent1 in DOCX theme');
+    assert.ok(theme.includes('val="1A1A2E"'), 'dk1 in DOCX theme');
+  });
+
+  it('DOCX with template uses custom fonts in styles', () => {
+    const buf = generateWithTemplate('# Styled Doc', 'docx', templatePath);
+    const styles = zipExtract(buf, 'word/styles.xml');
+    assert.ok(styles.includes('w:ascii="Verdana"'), 'body font should be Verdana');
+  });
+
+  it('template with sysClr extracts lastClr correctly', () => {
+    const sysTheme = customThemeXml.replace(
+      '<a:dk1><a:srgbClr val="1A1A2E"/></a:dk1>',
+      '<a:dk1><a:sysClr val="windowText" lastClr="112233"/></a:dk1>'
+    );
+    const sysBuf = createTestTemplate(sysTheme);
+    const sysPath = join(__dirname, '_test_template_sys.pptx');
+    require('fs').writeFileSync(sysPath, sysBuf);
+    try {
+      const buf = generateWithTemplate('# SysClr', 'pptx', sysPath);
+      const theme = zipExtract(buf, 'ppt/theme/theme1.xml');
+      assert.ok(theme.includes('lastClr="112233"'), 'Should extract lastClr from sysClr');
+    } finally {
+      try { require('fs').unlinkSync(sysPath); } catch {}
+    }
+  });
+
+  it('derived colors kept when template only overrides standard colors', () => {
+    const buf = generateWithTemplate('## Code\n```\nx = 1\n```', 'pptx', templatePath);
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // Derived colors (codeText) should still be defaults since template doesn't override them
+    assert.ok(slide.includes('val="2B2B2B"'), 'codeText should remain default 2B2B2B');
+    assert.ok(slide.includes('typeface="Consolas"'), 'code font should remain Consolas');
+  });
+
+  it('cleanup: remove test template', () => {
+    try { require('fs').unlinkSync(templatePath); } catch {}
+    assert.ok(true, 'cleanup done');
+  });
+});
+
+describe('Theme — ZIP reader', () => {
+  it('reads files from a valid ZIP generated by our writer', () => {
+    const buf = generate('# ZipTest', 'pptx');
+    // Use our test zipExtract and zipEntries to verify the main script output
+    const entries = zipEntries(buf);
+    assert.ok(entries.length > 5, 'Should have multiple entries');
+    assert.ok(entries.includes('ppt/theme/theme1.xml'), 'Should have theme');
+  });
+
+  it('invalid template file gives error exit', () => {
+    const badFile = join(__dirname, '_bad_template.pptx');
+    require('fs').writeFileSync(badFile, 'not a zip file');
+    try {
+      const result = run(`-f pptx -o _out.pptx --template "${badFile}"`, '# Test');
+      assert.notStrictEqual(result.exitCode, 0, 'Should fail on invalid template');
+    } finally {
+      try { require('fs').unlinkSync(badFile); } catch {}
+      try { require('fs').unlinkSync(join(__dirname, '_out.pptx')); } catch {}
+    }
+  });
+
+  it('missing template file gives error exit', () => {
+    const result = run('-f pptx -o _out.pptx --template nonexistent.pptx', '# Test');
+    assert.notStrictEqual(result.exitCode, 0, 'Should fail on missing template');
+  });
+});
