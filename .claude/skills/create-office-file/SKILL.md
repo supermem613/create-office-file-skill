@@ -27,6 +27,10 @@ node $SKILL_DIR/scripts/create-office-file.mjs -i input.md -o output.pptx --temp
 
 The `--template` (`-t`) option extracts theme colors (12 OOXML scheme colors) and fonts (major/minor) from the provided `.pptx` or `.docx` file and applies them to the output. Cross-format works: a `.pptx` template can style a `.docx` output and vice versa.
 
+When a `.docx` template is provided, the script also extracts:
+- **Full styles.xml** — heading styles, title style, font defaults, and spacing are faithfully reproduced (style-level `numPr` is stripped to avoid double-numbering since markdown headings already contain their numbering text)
+- **Headers and footers** — `header1.xml`, `footer1.xml`, etc. are carried over with correct `sectPr` references, so page numbers and classification labels appear in the output
+
 ## PPTX Slide Splitting
 
 | Markdown | Result |
@@ -38,7 +42,11 @@ The `--template` (`-t`) option extracts theme colors (12 OOXML scheme colors) an
 
 ## DOCX Heading Mapping
 
-`#` → Heading1, `##` → Heading2, ... `######` → Heading6. All other content maps to styled paragraphs, lists, code blocks, or tables.
+The first `#` heading in the document is styled as **Title** (large, themed). Subsequent `#` headings use `Heading1`. `##` → Heading2, ... `######` → Heading6. All other content maps to styled paragraphs, lists, code blocks, or tables.
+
+## DOCX List Numbering
+
+Each separate list in the markdown (bullet or ordered) gets its own numbering instance with restart. Lists separated by headings, paragraphs, or other content will restart their numbering from 1, not continue from the previous list.
 
 ## Supported Markdown
 

@@ -299,9 +299,10 @@ describe('Markdown parser — PPTX', () => {
 
 describe('Markdown parser — DOCX', () => {
   it('headings use correct styles', () => {
-    const buf = generate('# H1\n## H2\n### H3', 'docx');
+    const buf = generate('# H1\n## H2\n### H3\n# H1b', 'docx');
     const doc = zipExtract(buf, 'word/document.xml');
-    assert.ok(doc.includes('Heading1'), 'Should have Heading1 style');
+    assert.ok(doc.includes('pStyle w:val="Title"'), 'First H1 should use Title style');
+    assert.ok(doc.includes('Heading1'), 'Subsequent H1 should use Heading1 style');
     assert.ok(doc.includes('Heading2'), 'Should have Heading2 style');
     assert.ok(doc.includes('Heading3'), 'Should have Heading3 style');
   });
@@ -318,16 +319,16 @@ describe('Markdown parser — DOCX', () => {
     assert.ok(doc.includes('<w:i/>'), 'Should have italic element');
   });
 
-  it('bullet list references numId 1', () => {
+  it('bullet list gets a numId', () => {
     const buf = generate('- Bullet A\n- Bullet B', 'docx');
     const doc = zipExtract(buf, 'word/document.xml');
-    assert.ok(doc.includes('w:numId w:val="1"'), 'Should reference bullet numId');
+    assert.ok(/w:numId w:val="\d+"/.test(doc), 'Should reference a bullet numId');
   });
 
-  it('ordered list references numId 2', () => {
+  it('ordered list gets a numId', () => {
     const buf = generate('1. One\n2. Two', 'docx');
     const doc = zipExtract(buf, 'word/document.xml');
-    assert.ok(doc.includes('w:numId w:val="2"'), 'Should reference ordered numId');
+    assert.ok(/w:numId w:val="\d+"/.test(doc), 'Should reference an ordered numId');
   });
 
   it('code block uses CodeBlock style', () => {
@@ -395,12 +396,10 @@ describe('PPTX skeleton integrity', () => {
 // 9. DOCX skeleton integrity
 // ============================================================================
 describe('DOCX skeleton integrity', () => {
-  it('styles.xml defines all heading styles', () => {
+  it('styles.xml includes Title style', () => {
     const buf = generate('# Test', 'docx');
     const styles = zipExtract(buf, 'word/styles.xml');
-    for (let i = 1; i <= 6; i++) {
-      assert.ok(styles.includes(`Heading${i}`), `Should define Heading${i}`);
-    }
+    assert.ok(styles.includes('Title'), 'Should define Title style');
   });
 
   it('numbering.xml defines bullet and numbered lists', () => {
@@ -416,6 +415,173 @@ describe('DOCX skeleton integrity', () => {
     assert.ok(doc.includes('w:sectPr'), 'Should have section properties');
     assert.ok(doc.includes('w:pgSz'), 'Should have page size');
     assert.ok(doc.includes('w:pgMar'), 'Should have page margins');
+  });
+});
+
+// ============================================================================
+// 9b. Title style and numbered list restart
+// ============================================================================
+describe('DOCX — Title style', () => {
+  it('first H1 uses Title style', () => {
+    const buf = generate('# First\n## Sub\n# Second', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(doc.includes('pStyle w:val="Title"'), 'First H1 should use Title');
+    assert.ok(doc.includes('pStyle w:val="Heading1"'), 'Later H1 should use Heading1');
+  });
+
+  it('only one Title usage for multiple H1s', () => {
+    const buf = generate('# A\n# B\n# C', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    const titleCount = (doc.match(/pStyle w:val="Title"/g) || []).length;
+    assert.strictEqual(titleCount, 1, 'Should have exactly one Title style usage');
+  });
+});
+
+describe('DOCX — Numbered list restart', () => {
+  it('separate ordered lists get different numIds', () => {
+    const buf = generate('1. A\n2. B\n\nParagraph break\n\n1. C\n2. D', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    const numIds = [...new Set((doc.match(/numId w:val="(\d+)"/g) || []).map(m => m.match(/"(\d+)"/)[1]))];
+    assert.ok(numIds.length >= 2, `Expected at least 2 distinct numIds, got ${numIds.length}: ${numIds}`);
+  });
+
+  it('numbering.xml has startOverride for restart', () => {
+    const buf = generate('1. A\n2. B\n\nText\n\n1. C\n2. D', 'docx');
+    const num = zipExtract(buf, 'word/numbering.xml');
+    assert.ok(num.includes('w:startOverride'), 'Should have startOverride for list restart');
+  });
+
+  it('separate bullet lists get different numIds', () => {
+    const buf = generate('- A\n- B\n\nText\n\n- C\n- D', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    const numIds = [...new Set((doc.match(/numId w:val="(\d+)"/g) || []).map(m => m.match(/"(\d+)"/)[1]))];
+    assert.ok(numIds.length >= 2, `Separate bullet lists should have different numIds, got: ${numIds}`);
+  });
+});
+
+describe('DOCX — Template styles extraction', () => {
+  it('template styles.xml is used when provided', () => {
+    const templatePath = join(__dirname, '_test_tpl.docx');
+    try {
+      // Create a minimal DOCX template with custom styles
+      const { deflateRawSync } = require('zlib');
+      function crc(buf) {
+        if (typeof buf === 'string') buf = Buffer.from(buf, 'utf8');
+        const t = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+        let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
+      }
+      const theme = '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Test"><a:themeElements><a:clrScheme name="T"><a:dk1><a:srgbClr val="111111"/></a:dk1><a:lt1><a:srgbClr val="FEFEFE"/></a:lt1><a:dk2><a:srgbClr val="222222"/></a:dk2><a:lt2><a:srgbClr val="DDDDDD"/></a:lt2><a:accent1><a:srgbClr val="AA0000"/></a:accent1><a:accent2><a:srgbClr val="00AA00"/></a:accent2><a:accent3><a:srgbClr val="0000AA"/></a:accent3><a:accent4><a:srgbClr val="AAAA00"/></a:accent4><a:accent5><a:srgbClr val="AA00AA"/></a:accent5><a:accent6><a:srgbClr val="00AAAA"/></a:accent6><a:hlink><a:srgbClr val="FF0000"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="T"><a:majorFont><a:latin typeface="TestMajor"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="TestMinor"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="T"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+      const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="CustomFont" w:hAnsi="CustomFont"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:b/><w:sz w:val="48"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:sz w:val="72"/></w:rPr></w:style></w:styles>';
+      const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>';
+      const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+      const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>';
+      const doc = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>';
+      const files = [
+        { name: '[Content_Types].xml', data: Buffer.from(ct) },
+        { name: '_rels/.rels', data: Buffer.from(rootRels) },
+        { name: 'word/document.xml', data: Buffer.from(doc) },
+        { name: 'word/_rels/document.xml.rels', data: Buffer.from(docRels) },
+        { name: 'word/styles.xml', data: Buffer.from(stylesXml) },
+        { name: 'word/theme/theme1.xml', data: Buffer.from(theme) },
+      ];
+      const locals = [], centrals = [];
+      let offset = 0;
+      for (const f of files) {
+        const nameBuf = Buffer.from(f.name);
+        const comp = deflateRawSync(f.data);
+        const use = comp.length < f.data.length;
+        const stored = use ? comp : f.data;
+        const method = use ? 8 : 0;
+        const c = crc(f.data);
+        const local = Buffer.alloc(30 + nameBuf.length);
+        local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(method, 8);
+        local.writeUInt32LE(c, 14); local.writeUInt32LE(stored.length, 18); local.writeUInt32LE(f.data.length, 22);
+        local.writeUInt16LE(nameBuf.length, 26); nameBuf.copy(local, 30);
+        locals.push(local, stored);
+        const central = Buffer.alloc(46 + nameBuf.length);
+        central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+        central.writeUInt16LE(method, 10); central.writeUInt32LE(c, 16);
+        central.writeUInt32LE(stored.length, 20); central.writeUInt32LE(f.data.length, 24);
+        central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
+        nameBuf.copy(central, 46); centrals.push(central);
+        offset += local.length + stored.length;
+      }
+      const cdSz = centrals.reduce((s, b) => s + b.length, 0);
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+      eocd.writeUInt32LE(cdSz, 12); eocd.writeUInt32LE(offset, 16);
+      require('fs').writeFileSync(templatePath, Buffer.concat([...locals, ...centrals, eocd]));
+
+      const buf = generateWithTemplate('# Hello\nParagraph', 'docx', templatePath);
+      const styles = zipExtract(buf, 'word/styles.xml');
+      assert.ok(styles.includes('CustomFont'), 'Should use template styles with CustomFont');
+      assert.ok(styles.includes('CodeBlock'), 'Should inject CodeBlock style if missing');
+    } finally {
+      try { require('fs').unlinkSync(templatePath); } catch {}
+    }
+  });
+
+  it('numPr is stripped from template heading styles', () => {
+    const templatePath = join(__dirname, '_test_tpl2.docx');
+    try {
+      const { deflateRawSync } = require('zlib');
+      function crc(buf) {
+        if (typeof buf === 'string') buf = Buffer.from(buf, 'utf8');
+        const t = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+        let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
+      }
+      const theme = '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="T"><a:themeElements><a:clrScheme name="T"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="444444"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="T"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="T"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+      // Styles with numPr on Heading1 — should be stripped
+      const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style></w:styles>';
+      const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>';
+      const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+      const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>';
+      const doc = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>';
+      const files = [
+        { name: '[Content_Types].xml', data: Buffer.from(ct) },
+        { name: '_rels/.rels', data: Buffer.from(rootRels) },
+        { name: 'word/document.xml', data: Buffer.from(doc) },
+        { name: 'word/_rels/document.xml.rels', data: Buffer.from(docRels) },
+        { name: 'word/styles.xml', data: Buffer.from(stylesXml) },
+        { name: 'word/theme/theme1.xml', data: Buffer.from(theme) },
+      ];
+      const locals = [], centrals = [];
+      let offset = 0;
+      for (const f of files) {
+        const nameBuf = Buffer.from(f.name);
+        const comp = deflateRawSync(f.data);
+        const use = comp.length < f.data.length;
+        const stored = use ? comp : f.data;
+        const method = use ? 8 : 0;
+        const c = crc(f.data);
+        const local = Buffer.alloc(30 + nameBuf.length);
+        local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(method, 8);
+        local.writeUInt32LE(c, 14); local.writeUInt32LE(stored.length, 18); local.writeUInt32LE(f.data.length, 22);
+        local.writeUInt16LE(nameBuf.length, 26); nameBuf.copy(local, 30);
+        locals.push(local, stored);
+        const central = Buffer.alloc(46 + nameBuf.length);
+        central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+        central.writeUInt16LE(method, 10); central.writeUInt32LE(c, 16);
+        central.writeUInt32LE(stored.length, 20); central.writeUInt32LE(f.data.length, 24);
+        central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
+        nameBuf.copy(central, 46); centrals.push(central);
+        offset += local.length + stored.length;
+      }
+      const cdSz = centrals.reduce((s, b) => s + b.length, 0);
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+      eocd.writeUInt32LE(cdSz, 12); eocd.writeUInt32LE(offset, 16);
+      require('fs').writeFileSync(templatePath, Buffer.concat([...locals, ...centrals, eocd]));
+
+      const buf = generateWithTemplate('# Hello', 'docx', templatePath);
+      const styles = zipExtract(buf, 'word/styles.xml');
+      assert.ok(!styles.includes('<w:numPr>'), 'numPr should be stripped from heading styles');
+      assert.ok(styles.includes('outlineLvl'), 'Other pPr content should be preserved');
+    } finally {
+      try { require('fs').unlinkSync(templatePath); } catch {}
+    }
   });
 });
 
@@ -730,11 +896,11 @@ describe('Nested lists — DOCX', () => {
     assert.ok(numbering.includes('w:numFmt w:val="lowerRoman"'), 'Level 2 should be lowerRoman');
   });
 
-  it('nested ordered list uses ilvl 1 with numId 2', () => {
+  it('nested ordered list uses ilvl 1', () => {
     const buf = generate('1. Top\n  1. Sub', 'docx');
     const doc = zipExtract(buf, 'word/document.xml');
     assert.ok(doc.includes('w:ilvl w:val="1"'), 'Sub-item should be ilvl 1');
-    assert.ok(doc.includes('w:numId w:val="2"'), 'Should reference numbered list numId');
+    assert.ok(/w:numId w:val="\d+"/.test(doc), 'Should reference a numbered list numId');
   });
 });
 

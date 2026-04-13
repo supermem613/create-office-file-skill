@@ -1,15 +1,33 @@
 # Create Office File Skill — Evals
 
-Evals verify that generated `.pptx` and `.docx` files open correctly in Microsoft Office and contain the expected text and formatting.
+Evals verify that the `create-office-file` skill produces correct `.pptx` and `.docx` files.
 
-## Platform Requirement
+## Collateral
 
-**Windows-only.** Evals use PowerShell COM automation (`Word.Application`, `PowerPoint.Application`) to open files in actual Microsoft Office and inspect content. Requires:
-- Windows 10/11
-- Microsoft Office (Word + PowerPoint) installed
-- Node.js 18+
+All eval inputs are pre-built in `evals/inputs/`. Image evals reference `test-image.png` which is also in `evals/inputs/` alongside the markdown files. Template evals use `evals/create-template.mjs` and `evals/create-docx-template.mjs` to generate templates.
 
-On non-Windows systems or without Office, evals will report a skip with a clear message.
+## Numbering Scheme
+
+| Range   | Purpose    |
+|---------|------------|
+| 100–199 | DOCX evals |
+| 200–299 | PPTX evals |
+
+## Verifier
+
+`evals/verify-output.mjs` parses OOXML XML directly — no COM, no Office, cross-platform, ~80ms per file.
+
+```
+node evals/verify-output.mjs <file.pptx|docx>
+```
+
+Outputs JSON with text, formatting, structure, theme, and header/footer info.
+
+`evals/verify-pass-conditions.mjs` checks all result files against pass conditions and prints a summary table.
+
+```
+node evals/verify-pass-conditions.mjs
+```
 
 ## How to Run
 
@@ -19,449 +37,238 @@ Run evals/run-evals.md
 
 ## Execution Model
 
-The agent generates Office files with `create-office-file.mjs` (in the skill), then verifies them with `verify-output.mjs` (in evals).
+For each eval below:
+1. Send the **Prompt** to a sub-agent using the exact sub-agent prompt template below
+2. Run `node evals/verify-output.mjs` on the generated file
+3. Evaluate the JSON output against the **Pass condition**
+4. Record ✅ PASS or ❌ FAIL
 
-**Script paths** (relative to repo root):
-- Generator: `node .claude/skills/create-office-file/scripts/create-office-file.mjs`
-- Verifier: `node evals/verify-output.mjs`
+Output files go to `evals/results/`.
 
-For brevity in each eval below:
-- `$GEN` = `.claude/skills/create-office-file/scripts/create-office-file.mjs`
-- `$VER` = `evals/verify-output.mjs`
+### Sub-agent prompt template
 
-**How to run each eval:**
-1. Write a markdown file to a temp location (or use inline stdin)
-2. Generate the Office file: `node $GEN -i <input.md> -o <output>`
-3. Verify with COM: `node $VER <output>`
-4. Parse the JSON output and check the pass condition
-5. Clean up temp files
+Every eval MUST be executed by a sub-agent (general-purpose task agent) that receives
+ONLY the following prompt — nothing else. The sub-agent must discover how to use the
+skill from the skill interface alone. **Do NOT** pass repo knowledge, script paths,
+or implementation details to the sub-agent.
 
-**Temporary files:** Write all eval files to `os.tmpdir()`, not inside the repo. Prefix with `EVAL_TEST_`.
-
-**Pass/Fail:** `verify-output.mjs` outputs JSON with extracted text and formatting. Check the JSON fields against the pass conditions below. Exit code 0 = verification succeeded, non-zero = error.
-
-## Setup
-
-No auth or external services needed. All evals are local and offline.
-
-## Scoring
-
-For each eval: generate, verify, check pass condition.
-- ✅ **PASS** — file generated, COM verification succeeded, pass condition met
-- ❌ **FAIL** — generation failed, COM verification failed, or pass condition not met
-- ⏭️ **SKIP** — not on Windows or Office not installed
-
-After all evals, write the report to `evals/results/report.md`.
-
----
-
-## PPTX — Structure (3)
-
-### 01 — Title slide
-**Input:** `# My Presentation Title`
-**Generate:** `node $GEN -o EVAL_TEST_01.pptx` (stdin)
-**Verify:** `node $VER EVAL_TEST_01.pptx`
-**Pass if:** JSON `.slideCount` is 1 AND any slide shape `.text` contains `My Presentation Title`
-
-### 02 — Multiple slides from headings
-**Input:**
-```markdown
-# Title
-## Slide One
-Content A
-## Slide Two
-Content B
 ```
-**Generate:** Write input to `EVAL_TEST_02.md`, then `node $GEN -i EVAL_TEST_02.md -o EVAL_TEST_02.pptx`
-**Verify:** `node $VER EVAL_TEST_02.pptx`
-**Pass if:** JSON `.slideCount` is 3
+You have access to the "create-office-file" skill.
+Invoke the skill, then follow its instructions to complete this task:
 
-### 03 — Slide break with ---
-**Input:**
-```markdown
-## Part 1
-A
+{eval prompt here}
 
----
-
-## Part 2
-B
+RULES:
+- You MUST invoke the create-office-file skill to learn how to complete this task.
+- Do NOT look inside .claude/skills/*/scripts/ or read any .mjs files.
+- Do NOT run any script directly unless the skill's own instructions tell you to.
 ```
-**Generate & verify as above**
-**Pass if:** JSON `.slideCount` is 2
 
----
-
-## PPTX — Formatting (5)
-
-### 04 — Bold text
-**Input:** `## Test\n**Bold words here**`
-**Pass if:** Any run in slide 1 has `.bold` = true AND `.text` contains `Bold words here`
-
-### 05 — Italic text
-**Input:** `## Test\n*Italic words here*`
-**Pass if:** Any run has `.italic` = true AND `.text` contains `Italic words here`
-
-### 06 — Bullet list
-**Input:** `## Test\n- Alpha\n- Beta\n- Gamma`
-**Pass if:** Slide text contains `Alpha`, `Beta`, `Gamma`
-
-### 07 — Numbered list
-**Input:** `## Test\n1. First\n2. Second\n3. Third`
-**Pass if:** Slide text contains `First`, `Second`, `Third`
-
-### 08 — Code block with monospace font
-**Input:**
-````markdown
-## Test
-```
-const x = 42;
-```
-````
-**Pass if:** Any run has `.fontName` containing `Consolas` AND `.text` contains `const x = 42`
-
----
-
-## PPTX — Content (2)
-
-### 09 — Table
-**Input:**
-```markdown
-## Data
-| Name | Age |
-|------|-----|
-| Alice | 30 |
-| Bob | 25 |
-```
-**Pass if:** Slide text contains `Alice` AND `Bob` AND `Name` AND `Age`
-
-### 10 — Mixed content slide
-**Input:**
-```markdown
-## Overview
-Here is **bold** and *italic* text.
-
-- Point one
-- Point two
-
-And a [link](https://example.com).
-```
-**Pass if:** Slide text contains `bold`, `italic`, `Point one`, `Point two`, `link`
+If an eval has a **Setup** step, the runner (not the sub-agent) executes setup
+before launching the sub-agent.
 
 ---
 
 ## DOCX — Structure (2)
 
-### 11 — Headings map to styles
-**Input:**
-```markdown
-# Heading One
-## Heading Two
-### Heading Three
-Paragraph text.
-```
-**Generate:** `node $GEN -i EVAL_TEST_11.md -o EVAL_TEST_11.docx`
-**Verify:** `node $VER EVAL_TEST_11.docx`
-**Pass if:** Paragraphs include one with `.style` containing `Heading 1` and text `Heading One`, one with style `Heading 2` and text `Heading Two`, one with style `Heading 3` and text `Heading Three`
+### 100 — Headings map to styles
+**Prompt:** Create a Word document from `evals/inputs/100.md` and save it to `evals/results/100.docx`
+**Pass if:** Paragraphs include style `Title` or `Heading 1` with text `Heading One`, style `Heading 2` with `Heading Two`, style `Heading 3` with `Heading Three`
 
-### 12 — Paragraph count
-**Input:** `# Title\nPara one.\n\nPara two.\n\nPara three.`
-**Pass if:** JSON `.paragraphCount` >= 4 (title + 3 paragraphs)
+### 101 — Paragraph count
+**Prompt:** Create a Word document from `evals/inputs/101.md` and save it to `evals/results/101.docx`
+**Pass if:** `.paragraphCount` >= 4
 
 ---
 
 ## DOCX — Formatting (4)
 
-### 13 — Bold text
-**Input:** `**This is bold**`
-**Pass if:** Any run has `.bold` = true AND `.text` contains `This is bold` (or word fragments thereof)
+### 102 — Bold text
+**Prompt:** Create a Word document from `evals/inputs/102.md` and save it to `evals/results/102.docx`
+**Pass if:** Any run has `.bold` == true
 
-### 14 — Italic text
-**Input:** `*This is italic*`
-**Pass if:** Any run has `.italic` = true
+### 103 — Italic text
+**Prompt:** Create a Word document from `evals/inputs/103.md` and save it to `evals/results/103.docx`
+**Pass if:** Any run has `.italic` == true
 
-### 15 — Bullet list
-**Input:** `- Apple\n- Banana\n- Cherry`
+### 104 — Bullet list
+**Prompt:** Create a Word document from `evals/inputs/104.md` and save it to `evals/results/104.docx`
 **Pass if:** Paragraph text contains `Apple`, `Banana`, `Cherry`
-**Note:** Word COM reports list paragraphs with `List Paragraph` or `List Bullet` style — check style name contains `List` or the paragraph text is correct.
 
-### 16 — Code block
-**Input:**
-````markdown
-```
-function hello() { return 42; }
-```
-````
+### 105 — Code block
+**Prompt:** Create a Word document from `evals/inputs/105.md` and save it to `evals/results/105.docx`
 **Pass if:** Any run has `.fontName` containing `Consolas`
 
 ---
 
 ## DOCX — Content (2)
 
-### 17 — Table
-**Input:**
-```markdown
-| City | Pop |
-|------|-----|
-| NYC | 8M |
-| LA | 4M |
-```
+### 106 — Table
+**Prompt:** Create a Word document from `evals/inputs/106.md` and save it to `evals/results/106.docx`
 **Pass if:** Document text contains `City`, `Pop`, `NYC`, `LA`
 
-### 18 — Full document
-**Input:**
-```markdown
-# Report Title
-
-## Introduction
-This report covers **important** findings.
-
-## Key Points
-1. First finding
-2. Second finding
-3. Third finding
-
-## Data
-
-| Metric | Value |
-|--------|-------|
-| Score | 95 |
-| Grade | A |
-
-## Conclusion
-*Thank you* for reading.
-```
-**Pass if:** All of: `Report Title`, `Introduction`, `important`, `First finding`, `Score`, `Grade`, `Conclusion`, `Thank you` appear in document text
-
----
-
-## PPTX — Images (2)
-
-### 19 — PPTX with embedded PNG
-**Input:**
-```markdown
-## Photo Slide
-
-![Test Image](test-image.png)
-```
-**Setup:** Copy `tests/test-image.png` to the temp directory next to the markdown file.
-**Generate:** Write input to `EVAL_TEST_19.md` in temp dir (with test-image.png alongside), then `node $GEN -i EVAL_TEST_19.md -o EVAL_TEST_19.pptx`
-**Verify:** `node $VER EVAL_TEST_19.pptx`
-**Pass if:** JSON has no `.error`, AND any shape in any slide has `.isPicture` = true OR `.shapeType` = 13
-
-### 20 — PPTX with image and text
-**Input:**
-```markdown
-## Mixed Slide
-Here is some text content.
-
-![Chart](test-image.png)
-```
-**Setup:** Same as 19 — ensure test-image.png is alongside the markdown file.
-**Generate & verify as above**
-**Pass if:** Any slide has a shape with `.isPicture` = true AND another shape with `.hasText` = true containing `some text content`
+### 107 — Full document
+**Prompt:** Create a Word document from `evals/inputs/107.md` and save it to `evals/results/107.docx`
+**Pass if:** Document text contains all of: `Report Title`, `Introduction`, `important`, `First finding`, `Score`, `Grade`, `Conclusion`, `Thank you`
 
 ---
 
 ## DOCX — Images (2)
 
-### 21 — DOCX with embedded PNG
-**Input:**
-```markdown
-# Document with Image
+### 108 — DOCX with embedded PNG
+**Prompt:** Create a Word document from `evals/inputs/108.md` and save it to `evals/results/108.docx`
+**Pass if:** `.inlineShapeCount` >= 1
 
-![Test Image](test-image.png)
-```
-**Setup:** Copy `tests/test-image.png` to temp dir next to the markdown file.
-**Generate:** `node $GEN -i EVAL_TEST_21.md -o EVAL_TEST_21.docx`
-**Verify:** `node $VER EVAL_TEST_21.docx`
-**Pass if:** JSON `.inlineShapeCount` >= 1
+### 109 — DOCX with image and surrounding text
+**Prompt:** Create a Word document from `evals/inputs/109.md` and save it to `evals/results/109.docx`
+**Pass if:** `.inlineShapeCount` >= 1 AND paragraph text contains `First paragraph` AND `Second paragraph`
 
-### 22 — DOCX with image and surrounding text
-**Input:**
-```markdown
-# Report
+---
 
-First paragraph of text.
+## DOCX — Nested Lists (1)
 
-![Data Chart](test-image.png)
+### 110 — Nested mixed list
+**Prompt:** Create a Word document from `evals/inputs/110.md` and save it to `evals/results/110.docx`
+**Pass if:** Paragraph text contains all of: `Bullet level 0`, `Bullet level 1`, `Bullet level 2`, `Back to level 0`, `Number level 0`, `Number level 1`, `Number level 2`
 
-Second paragraph with conclusions.
-```
-**Setup:** Same as 21.
-**Generate & verify as above**
-**Pass if:** JSON `.inlineShapeCount` >= 1 AND paragraph text contains `First paragraph` AND `Second paragraph`
+---
+
+## DOCX — Custom Theme (2)
+
+### 111 — DOCX with theme
+**Prompt:** Create a Word document from `evals/inputs/111.md` and save it to `evals/results/111.docx`
+**Pass if:** No `.error`; paragraph text contains `Document with Theme` and `Paragraph with`
+
+### 112 — DOCX from template has custom styles
+**Setup:** Run `node evals/create-template.mjs evals/results/eval27_template.pptx` first.
+**Prompt:** Create a Word document from `evals/inputs/112.md` using `evals/results/eval27_template.pptx` as template, and save it to `evals/results/112.docx`
+**Pass if:** No `.error`; `.theme.fonts.minor` == `Verdana` AND `.theme.colors.accent1` == `E94560`
+
+---
+
+## DOCX — Title Style (1)
+
+### 113 — First H1 uses Title style
+**Prompt:** Create a Word document from `evals/inputs/113.md` and save it to `evals/results/113.docx`
+**Pass if:** First paragraph has `.style` == `Title` AND text contains `My Document Title`; a later paragraph has `.style` containing `Heading 1` AND text contains `Another Top-Level Heading`
+
+---
+
+## DOCX — List Restart (2)
+
+### 114 — Ordered lists restart numbering
+**Prompt:** Create a Word document from `evals/inputs/114.md` and save it to `evals/results/114.docx`
+**Pass if:** Document text contains `Ship built-in skills`, `Skill marketplace`, `OOB skills visible`
+
+### 115 — Bullet lists are independent
+**Prompt:** Create a Word document from `evals/inputs/115.md` and save it to `evals/results/115.docx`
+**Pass if:** Paragraph text contains `Alpha`, `Beta`, `Gamma`, `Delta`
+
+---
+
+## DOCX — Template Styles (1)
+
+### 116 — DOCX from template preserves heading styles
+**Setup:** Ensure `evals/results/eval27_template.pptx` exists (same template as eval 27).
+**Prompt:** Create a Word document from `evals/inputs/116.md` using `evals/results/eval27_template.pptx` as template, and save it to `evals/results/116.docx`
+**Pass if:** No `.error`; first H1 paragraph has `.style` == `Title`
+
+---
+
+## DOCX — Headers & Footers (1)
+
+### 117 — DOCX from template preserves footer
+**Setup:** Run `node evals/create-docx-template.mjs evals/results/eval100_template.docx` to create a DOCX template with a footer.
+**Prompt:** Create a Word document from `evals/inputs/117.md` using `evals/results/eval100_template.docx` as template, and save it to `evals/results/117.docx`
+**Pass if:** No `.error`; `.headersFooters` has an entry with `.name` containing `footer` AND `.text` containing `CONFIDENTIAL`
+
+---
+
+## PPTX — Structure (3)
+
+### 200 — Title slide
+**Prompt:** Create a PowerPoint from `evals/inputs/200.md` and save it to `evals/results/200.pptx`
+**Pass if:** `.slideCount` == 1 AND any shape `.text` contains `My Presentation Title`
+
+### 201 — Multiple slides from headings
+**Prompt:** Create a PowerPoint from `evals/inputs/201.md` and save it to `evals/results/201.pptx`
+**Pass if:** `.slideCount` == 3
+
+### 202 — Slide break with ---
+**Prompt:** Create a PowerPoint from `evals/inputs/202.md` and save it to `evals/results/202.pptx`
+**Pass if:** `.slideCount` == 2
+
+---
+
+## PPTX — Formatting (5)
+
+### 203 — Bold text
+**Prompt:** Create a PowerPoint from `evals/inputs/203.md` and save it to `evals/results/203.pptx`
+**Pass if:** Any run has `.bold` == true AND `.text` contains `Bold words here`
+
+### 204 — Italic text
+**Prompt:** Create a PowerPoint from `evals/inputs/204.md` and save it to `evals/results/204.pptx`
+**Pass if:** Any run has `.italic` == true AND `.text` contains `Italic words here`
+
+### 205 — Bullet list
+**Prompt:** Create a PowerPoint from `evals/inputs/205.md` and save it to `evals/results/205.pptx`
+**Pass if:** Slide text contains `Alpha`, `Beta`, `Gamma`
+
+### 206 — Numbered list
+**Prompt:** Create a PowerPoint from `evals/inputs/206.md` and save it to `evals/results/206.pptx`
+**Pass if:** Slide text contains `First`, `Second`, `Third`
+
+### 207 — Code block with monospace font
+**Prompt:** Create a PowerPoint from `evals/inputs/207.md` and save it to `evals/results/207.pptx`
+**Pass if:** Any run has `.fontName` containing `Consolas` AND `.text` contains `const x = 42`
+
+---
+
+## PPTX — Content (2)
+
+### 208 — Table
+**Prompt:** Create a PowerPoint from `evals/inputs/208.md` and save it to `evals/results/208.pptx`
+**Pass if:** Slide text contains `Alice`, `Bob`, `Name`, `Age`
+
+### 209 — Mixed content slide
+**Prompt:** Create a PowerPoint from `evals/inputs/209.md` and save it to `evals/results/209.pptx`
+**Pass if:** Slide text contains `bold`, `italic`, `Point one`, `Point two`, `link`
+
+---
+
+## PPTX — Images (2)
+
+### 210 — PPTX with embedded PNG
+**Prompt:** Create a PowerPoint from `evals/inputs/210.md` and save it to `evals/results/210.pptx`
+**Pass if:** Any shape has `.isPicture` == true OR `.shapeType` == 13
+
+### 211 — PPTX with image and text
+**Prompt:** Create a PowerPoint from `evals/inputs/211.md` and save it to `evals/results/211.pptx`
+**Pass if:** Any shape has `.isPicture` == true AND another shape `.text` contains `some text content`
 
 ---
 
 ## PPTX — Nested Lists (1)
 
-### Eval 23: Nested bullet list (PPTX)
-**Input markdown:**
-```markdown
-## List Demo
-- Top level item
-  - Second level item
-    - Third level item
-- Back to top
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval23.pptx`
-**Verify:** `node $VER evals/results/eval23.pptx`
-**Pass if:** JSON contains shapes with text `Top level item`, `Second level item`, `Third level item`, `Back to top`; file opens without repair dialog
-
-## DOCX — Nested Lists (1)
-
-### Eval 24: Nested mixed list (DOCX)
-**Input markdown:**
-```markdown
-# Nested Lists
-- Bullet level 0
-  - Bullet level 1
-    - Bullet level 2
-- Back to level 0
-
-1. Number level 0
-  1. Number level 1
-    1. Number level 2
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval24.docx`
-**Verify:** `node $VER evals/results/eval24.docx`
-**Pass if:** JSON paragraph text contains all items; bullet items show different bullet chars per level; numbered items show different formats per level; file opens without repair dialog
+### 212 — Nested bullet list
+**Prompt:** Create a PowerPoint from `evals/inputs/212.md` and save it to `evals/results/212.pptx`
+**Pass if:** Shape text contains `Top level item`, `Second level item`, `Third level item`, `Back to top`
 
 ---
 
-## PPTX — Custom Theme (1)
+## PPTX — Custom Theme (2)
 
-### Eval 25: PPTX with default theme opens correctly
-**Input markdown:**
-```markdown
-# Default Theme Test
+### 213 — PPTX with default theme
+**Prompt:** Create a PowerPoint from `evals/inputs/213.md` and save it to `evals/results/213.pptx`
+**Pass if:** No `.error`; shape text contains `Default Theme Test` and `Some content`
 
-Some content with **bold** and *italic*.
-
-- Bullet item
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval25.pptx`
-**Verify:** `node $VER evals/results/eval25.pptx`
-**Pass if:** File opens without repair dialog; JSON contains shapes with text `Default Theme Test`, `Some content`; theme1.xml contains accent1 value `4472C4`
-
-## DOCX — Custom Theme (1)
-
-### Eval 26: DOCX with theme1.xml opens correctly
-**Input markdown:**
-```markdown
-# Document with Theme
-
-Paragraph with `inline code` and a [link](https://example.com).
-
-| Header1 | Header2 |
-|---------|---------|
-| Cell1   | Cell2   |
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval26.docx`
-**Verify:** `node $VER evals/results/eval26.docx`
-**Pass if:** File opens without repair dialog; JSON paragraphs contain `Document with Theme`, `Paragraph with`; document has theme relationship in rels
-
-## PPTX — Template Theme (1)
-
-### Eval 27: PPTX from template has custom colors
-**Setup:** Create a custom theme template:
-1. Create custom theme XML with accent1=`E94560`, accent2=`0F3460`, majorFont=`Georgia`, minorFont=`Verdana`
-2. Package into minimal PPTX ZIP with `ppt/theme/theme1.xml`
-3. Save as `evals/results/eval27_template.pptx`
-
-**Input markdown:**
-```markdown
-# Themed Presentation
-
-Content styled with custom theme.
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval27.pptx --template evals/results/eval27_template.pptx`
-**Verify:** `node $VER evals/results/eval27.pptx`
-**Pass if:** File opens without repair dialog; theme1.xml inside output contains `E94560` (accent1) and `Georgia` (majorFont); does NOT contain default `4472C4`
-
-## DOCX — Template Theme (1)
-
-### Eval 28: DOCX from template has custom styles
-**Setup:** Same template as eval 27.
-
-**Input markdown:**
-```markdown
-# Themed Document
-
-A paragraph with **bold text** and a code block:
-
-```javascript
-console.log("hello")
-```
-```
-**Generate:** `echo <markdown> | node $GEN -o evals/results/eval28.docx --template evals/results/eval27_template.pptx`
-**Verify:** `node $VER evals/results/eval28.docx`
-**Pass if:** File opens without repair dialog; styles.xml uses `Verdana` as default font; theme1.xml contains `E94560`
+### 214 — PPTX from template has custom colors
+**Setup:** Run `node evals/create-template.mjs evals/results/eval27_template.pptx` first.
+**Prompt:** Create a PowerPoint from `evals/inputs/214.md` using `evals/results/eval27_template.pptx` as template, and save it to `evals/results/214.pptx`
+**Pass if:** No `.error`; `.theme.colors.accent1` == `E94560` AND `.theme.fonts.major` == `Georgia`; `.theme.colors.accent1` != `4472C4`
 
 ---
 
 ## Report
 
-After completing all evals, write `evals/results/report.md`:
-
-```
-# Eval Report — [date]
-
-**Platform:** Windows [version]
-**Office:** [Word/PowerPoint version]
-**Overall:** [passed]/28 ([percentage]%) — [failed] failed, [skipped] skipped
-
-## Summary
-
-| Category           | Pass | Fail | Skip | Total |
-|--------------------|------|------|------|-------|
-| PPTX Structure     |      |      |      | 3     |
-| PPTX Formatting    |      |      |      | 5     |
-| PPTX Content       |      |      |      | 2     |
-| PPTX Images        |      |      |      | 2     |
-| PPTX Nested Lists  |      |      |      | 1     |
-| PPTX Custom Theme  |      |      |      | 2     |
-| DOCX Structure     |      |      |      | 2     |
-| DOCX Formatting    |      |      |      | 4     |
-| DOCX Content       |      |      |      | 2     |
-| DOCX Images        |      |      |      | 2     |
-| DOCX Nested Lists  |      |      |      | 1     |
-| DOCX Custom Theme  |      |      |      | 2     |
-
-## Results
-
-| #  | Eval                  | Score | Notes |
-|----|-----------------------|-------|-------|
-| 01 | Title slide           |       |       |
-| 02 | Multiple slides       |       |       |
-| 03 | Slide break           |       |       |
-| 04 | Bold text (PPTX)      |       |       |
-| 05 | Italic text (PPTX)    |       |       |
-| 06 | Bullet list (PPTX)    |       |       |
-| 07 | Numbered list (PPTX)  |       |       |
-| 08 | Code block (PPTX)     |       |       |
-| 09 | Table (PPTX)          |       |       |
-| 10 | Mixed content (PPTX)  |       |       |
-| 11 | Heading styles (DOCX) |       |       |
-| 12 | Paragraph count       |       |       |
-| 13 | Bold text (DOCX)      |       |       |
-| 14 | Italic text (DOCX)    |       |       |
-| 15 | Bullet list (DOCX)    |       |       |
-| 16 | Code block (DOCX)     |       |       |
-| 17 | Table (DOCX)          |       |       |
-| 18 | Full document (DOCX)  |       |       |
-| 19 | Image (PPTX)          |       |       |
-| 20 | Image + text (PPTX)   |       |       |
-| 21 | Image (DOCX)          |       |       |
-| 22 | Image + text (DOCX)   |       |       |
-| 23 | Nested list (PPTX)    |       |       |
-| 24 | Nested list (DOCX)    |       |       |
-| 25 | Default theme (PPTX)  |       |       |
-| 26 | Theme1.xml (DOCX)     |       |       |
-| 27 | Template theme (PPTX) |       |       |
-| 28 | Template theme (DOCX) |       |       |
-
-## Failures
-[Details for any ❌]
-```
+After all evals, run `node evals/verify-pass-conditions.mjs` and write `evals/results/report.md` with the summary table and per-eval results.

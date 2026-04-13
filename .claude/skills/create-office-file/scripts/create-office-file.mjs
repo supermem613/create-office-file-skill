@@ -250,6 +250,7 @@ function defaultTheme() {
       inlineCodeBg: 'E8E8E8', tableHeaderFill: 'D9E2F3',
     },
     fonts: { major: 'Calibri Light', minor: 'Calibri', code: 'Consolas' },
+    rawStylesXml: null,
   };
 }
 
@@ -359,7 +360,43 @@ function buildDocxStylesXml(theme) {
     <w:name w:val="Hyperlink"/>
     <w:rPr><w:color w:val="${c.hlink}"/><w:u w:val="single"/></w:rPr>
   </w:style>
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:spacing w:after="0" w:line="204" w:lineRule="auto"/><w:contextualSpacing/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="${f.major}" w:hAnsi="${f.major}"/><w:caps/><w:color w:val="${c.accent1}"/><w:spacing w:val="-15"/><w:sz w:val="72"/><w:szCs w:val="72"/></w:rPr>
+  </w:style>
 </w:styles>`;
+}
+
+function resolveDocxStylesXml(theme) {
+  if (!theme.rawStylesXml) return buildDocxStylesXml(theme);
+  // Use template styles but strip auto-numbering from ALL style definitions —
+  // our document applies numbering explicitly at the paragraph level via numPr,
+  // so style-level numPr would conflict and cause double-numbering or
+  // unexpected numbering on paragraphs that inherit from numbered styles.
+  let styles = theme.rawStylesXml;
+  styles = styles.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
+  const extras = [];
+  if (!styles.includes('styleId="CodeBlock"')) {
+    extras.push(`<w:style w:type="paragraph" w:styleId="CodeBlock">
+    <w:name w:val="Code Block"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.codeBg}"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="${theme.fonts.code}" w:hAnsi="${theme.fonts.code}" w:cs="${theme.fonts.code}"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>
+  </w:style>`);
+  }
+  if (!styles.includes('styleId="Hyperlink"')) {
+    extras.push(`<w:style w:type="character" w:styleId="Hyperlink">
+    <w:name w:val="Hyperlink"/>
+    <w:rPr><w:color w:val="${theme.colors.hlink}"/><w:u w:val="single"/></w:rPr>
+  </w:style>`);
+  }
+  if (extras.length > 0) {
+    styles = styles.replace('</w:styles>', extras.join('\n') + '\n</w:styles>');
+  }
+  return styles;
 }
 
 function parseThemeColors(xml) {
@@ -396,6 +433,34 @@ function extractThemeFromTemplate(templatePath) {
   if (Object.keys(colors).length > 0) overrides.colors = colors;
   const fonts = parseThemeFonts(themeXml);
   if (Object.keys(fonts).length > 0) overrides.fonts = fonts;
+  // Extract styles.xml from DOCX templates for faithful style reproduction
+  const stylesData = zip.getFile('word/styles.xml');
+  if (stylesData) overrides.rawStylesXml = stylesData.toString('utf8');
+  // Extract headers and footers from DOCX templates
+  const headerFooterFiles = [];
+  const rels = zip.getFile('word/_rels/document.xml.rels');
+  if (rels) {
+    const relsXml = rels.toString('utf8');
+    const hfRe = /Relationship[^>]*Id="([^"]*)"[^>]*Type="[^"]*\/(header|footer)"[^>]*Target="([^"]*)"/g;
+    let m;
+    while ((m = hfRe.exec(relsXml)) !== null) {
+      const filePath = `word/${m[3]}`;
+      const data = zip.getFile(filePath);
+      if (data) {
+        headerFooterFiles.push({ rId: m[1], type: m[2], target: m[3], content: data });
+      }
+    }
+  }
+  if (headerFooterFiles.length > 0) overrides.headerFooterFiles = headerFooterFiles;
+  // Extract sectPr from template document for footer/header references
+  if (rels) {
+    const docData = zip.getFile('word/document.xml');
+    if (docData) {
+      const docXml = docData.toString('utf8');
+      const sectPrMatch = docXml.match(/<w:sectPr[\s\S]*?<\/w:sectPr>/);
+      if (sectPrMatch) overrides.templateSectPr = sectPrMatch[0];
+    }
+  }
   return overrides;
 }
 
@@ -403,6 +468,9 @@ function mergeTheme(base, overrides) {
   return {
     colors: { ...base.colors, ...(overrides.colors || {}) },
     fonts: { ...base.fonts, ...(overrides.fonts || {}) },
+    rawStylesXml: overrides.rawStylesXml || null,
+    headerFooterFiles: overrides.headerFooterFiles || [],
+    templateSectPr: overrides.templateSectPr || null,
   };
 }
 
@@ -988,11 +1056,18 @@ function generatePptx(ast, inputPath, theme) {
 // DOCX Generator (WordprocessingML with hard-coded templates)
 // ============================================================================
 
-function docxContentTypes(imageExts) {
+function docxContentTypes(imageExts, headerFooterFiles) {
   let imgDefaults = '';
   for (const ext of imageExts) {
     const ct = IMAGE_CONTENT_TYPES['.' + ext];
     if (ct) imgDefaults += `  <Default Extension="${ext}" ContentType="${ct}"/>\n`;
+  }
+  let hfOverrides = '';
+  for (const hf of (headerFooterFiles || [])) {
+    const ct = hf.type === 'header'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml'
+      : 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml';
+    hfOverrides += `  <Override PartName="/word/${hf.target}" ContentType="${ct}"/>\n`;
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -1002,7 +1077,7 @@ ${imgDefaults}  <Override PartName="/word/document.xml" ContentType="application
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
   <Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
-</Types>`;
+${hfOverrides}</Types>`;
 }
 
 const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1010,28 +1085,37 @@ const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
 
-function docxDocumentRels(hyperlinks, images) {
+function docxDocumentRels(hyperlinks, images, headerFooterFiles) {
   let rels = `  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>`;
-  hyperlinks.forEach((url, idx) => {
-    rels += `\n  <Relationship Id="rId${idx + 4}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
+  let nextId = 4;
+  // Header/footer relationships — assign new rIds and record mapping
+  const hfRIdMap = {}; // old rId → new rId
+  for (const hf of (headerFooterFiles || [])) {
+    const newRId = `rId${nextId++}`;
+    hfRIdMap[hf.rId] = newRId;
+    const relType = hf.type === 'header'
+      ? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header'
+      : 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer';
+    rels += `\n  <Relationship Id="${newRId}" Type="${relType}" Target="${hf.target}"/>`;
+  }
+  hyperlinks.forEach((url) => {
+    rels += `\n  <Relationship Id="rId${nextId++}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(url)}" TargetMode="External"/>`;
   });
-  const imgBase = hyperlinks.length + 4;
-  images.forEach((img, idx) => {
-    rels += `\n  <Relationship Id="rId${imgBase + idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${img.name}"/>`;
+  images.forEach((img) => {
+    rels += `\n  <Relationship Id="rId${nextId++}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${img.name}"/>`;
   });
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 ${rels}
 </Relationships>`;
+  return { xml, hfRIdMap, nextId };
 }
 
 // DOCX styles are now generated via buildDocxStylesXml(theme)
 
-const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:abstractNum w:abstractNumId="0">
+const DOCX_NUMBERING_BASE_BULLET = `  <w:abstractNum w:abstractNumId="0">
     <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
       <w:start w:val="1"/>
@@ -1039,27 +1123,27 @@ const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       <w:lvlText w:val="\u2022"/>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
-      <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr>
+      <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:hint="default"/></w:rPr>
     </w:lvl>
     <w:lvl w:ilvl="1">
       <w:start w:val="1"/>
       <w:numFmt w:val="bullet"/>
-      <w:lvlText w:val="o"/>
+      <w:lvlText w:val="\u2013"/>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
-      <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:hint="default"/></w:rPr>
+      <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:hint="default"/></w:rPr>
     </w:lvl>
     <w:lvl w:ilvl="2">
       <w:start w:val="1"/>
       <w:numFmt w:val="bullet"/>
-      <w:lvlText w:val="\u25A0"/>
+      <w:lvlText w:val="\u25CB"/>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
-      <w:rPr><w:rFonts w:ascii="Wingdings" w:hAnsi="Wingdings" w:hint="default"/></w:rPr>
+      <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:hint="default"/></w:rPr>
     </w:lvl>
-  </w:abstractNum>
-  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
-  <w:abstractNum w:abstractNumId="1">
+  </w:abstractNum>`;
+
+const DOCX_NUMBERING_BASE_ORDERED = `  <w:abstractNum w:abstractNumId="1">
     <w:multiLevelType w:val="multilevel"/>
     <w:lvl w:ilvl="0">
       <w:start w:val="1"/>
@@ -1082,11 +1166,29 @@ const DOCX_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       <w:lvlJc w:val="left"/>
       <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
     </w:lvl>
-  </w:abstractNum>
-  <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
-</w:numbering>`;
+  </w:abstractNum>`;
 
-function inlineToWordML(children, links, images, inputPath, theme) {
+function buildDocxNumbering(listInstances) {
+  // abstractNumId 0 = bullet, abstractNumId 1 = ordered
+  // Each list instance gets its own <w:num> with restart overrides
+  let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+${DOCX_NUMBERING_BASE_BULLET}
+${DOCX_NUMBERING_BASE_ORDERED}`;
+  for (let i = 0; i < listInstances.length; i++) {
+    const numId = i + 1;
+    const abstractNumId = listInstances[i].type === 'bullet' ? 0 : 1;
+    const restart = `<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride><w:lvlOverride w:ilvl="1"><w:startOverride w:val="1"/></w:lvlOverride><w:lvlOverride w:ilvl="2"><w:startOverride w:val="1"/></w:lvlOverride>`;
+    xml += `
+  <w:num w:numId="${numId}"><w:abstractNumId w:val="${abstractNumId}"/>${restart}</w:num>`;
+  }
+  xml += `
+</w:numbering>`;
+  return xml;
+}
+
+function inlineToWordML(children, links, images, inputPath, theme, rIdBase) {
+  const base = rIdBase || 3; // rId1=styles, rId2=numbering, rId3=theme; links start after base
   return children.map(c => {
     const text = c.text || '';
     const needsSpace = text.startsWith(' ') || text.endsWith(' ');
@@ -1099,7 +1201,7 @@ function inlineToWordML(children, links, images, inputPath, theme) {
       case 'code': return `<w:r><w:rPr><w:rFonts w:ascii="${theme.fonts.code}" w:hAnsi="${theme.fonts.code}" w:cs="${theme.fonts.code}"/><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.inlineCodeBg}"/></w:rPr>${t}</w:r>`;
       case 'link': {
         links.push(c.url);
-        const rId = `rId${links.length + 3}`;
+        const rId = `rId${base + links.length}`;
         return `<w:hyperlink r:id="${rId}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>${esc(c.text)}</w:t></w:r></w:hyperlink>`;
       }
       case 'image': {
@@ -1111,7 +1213,7 @@ function inlineToWordML(children, links, images, inputPath, theme) {
           return `<w:r><w:rPr><w:i/></w:rPr><w:t>[Image: ${esc(c.alt || c.src)}]</w:t></w:r>`;
         }
         const imgName = `image${images.length + 1}${imgData.ext}`;
-        const rId = `rId${links.length + 4 + images.length}`;
+        const rId = `rId${base + links.length + 1 + images.length}`;
         images.push({ name: imgName, buffer: imgData.buffer });
         const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
         const h = imgData.height || Math.round(DEFAULT_IMG_H / PX_TO_EMU);
@@ -1123,9 +1225,15 @@ function inlineToWordML(children, links, images, inputPath, theme) {
   }).join('');
 }
 
-function astToDocxBody(ast, links, images, inputPath, theme) {
+function astToDocxBody(ast, links, images, inputPath, theme, rIdBase) {
   let body = '';
   let docPrId = 1; // unique ID counter for wp:docPr
+  let firstH1Seen = false; // track whether first H1 has been emitted as Title
+
+  // Track list numbering: each separate list (bullet or ordered) gets a unique
+  // numId so numbering restarts per list and bullet lists don't share state.
+  // We collect all list instances and generate numbering.xml accordingly.
+  const listInstances = []; // { type: 'bullet'|'ordered' }
 
   // DOCX max image width: page width minus margins = 12240 - 2*1440 = 9360 twips = 6.5" = 5943600 EMU
   const DOCX_IMG_MAX_W = 6.5 * 914400;
@@ -1135,11 +1243,18 @@ function astToDocxBody(ast, links, images, inputPath, theme) {
     switch (node.type) {
       case 'heading': {
         const level = Math.min(node.level, 6);
-        body += `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath, theme)}</w:p>`;
+        let styleId;
+        if (level === 1 && !firstH1Seen) {
+          styleId = 'Title';
+          firstH1Seen = true;
+        } else {
+          styleId = `Heading${level}`;
+        }
+        body += `<w:p><w:pPr><w:pStyle w:val="${styleId}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         break;
       }
       case 'paragraph':
-        body += `<w:p>${inlineToWordML(node.children, links, images, inputPath, theme)}</w:p>`;
+        body += `<w:p>${inlineToWordML(node.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         break;
       case 'image': {
         const imgData = resolveImage(node.src, inputPath);
@@ -1148,7 +1263,7 @@ function astToDocxBody(ast, links, images, inputPath, theme) {
           break;
         }
         const imgName = `image${images.length + 1}${imgData.ext}`;
-        const rId = `rId${links.length + 4 + images.length}`;
+        const rId = `rId${rIdBase + links.length + 1 + images.length}`;
         images.push({ name: imgName, buffer: imgData.buffer });
 
         const w = imgData.width || Math.round(DEFAULT_IMG_W / PX_TO_EMU);
@@ -1159,18 +1274,24 @@ function astToDocxBody(ast, links, images, inputPath, theme) {
         body += `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${dpId}" name="${esc(node.alt || imgName)}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="${esc(imgName)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
         break;
       }
-      case 'bullet_list':
+      case 'bullet_list': {
+        listInstances.push({ type: 'bullet' });
+        const listNumId = listInstances.length; // 1-based
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         }
         break;
-      case 'ordered_list':
+      }
+      case 'ordered_list': {
+        listInstances.push({ type: 'ordered' });
+        const listNumId = listInstances.length; // 1-based
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="2"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme)}</w:p>`;
+          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         }
         break;
+      }
       case 'code_block':
         for (const line of node.text.split('\n')) {
           body += `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="${theme.fonts.code}" w:hAnsi="${theme.fonts.code}" w:cs="${theme.fonts.code}"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">${esc(line)}</w:t></w:r></w:p>`;
@@ -1208,17 +1329,40 @@ function astToDocxBody(ast, links, images, inputPath, theme) {
     }
   }
 
-  return body;
+  return { body, listInstances };
 }
 
 function generateDocx(ast, inputPath, theme) {
   const links = [];
   const images = [];
-  const bodyContent = astToDocxBody(ast, links, images, inputPath, theme);
+  const hfFiles = theme.headerFooterFiles || [];
+  // rIdBase = 3 (styles, numbering, theme) + header/footer count
+  const rIdBase = 3 + hfFiles.length;
+  const { body: bodyContent, listInstances } = astToDocxBody(ast, links, images, inputPath, theme, rIdBase);
 
   // Collect unique image extensions
   const imageExts = new Set();
   for (const img of images) imageExts.add(img.name.split('.').pop());
+
+  // Build document.xml.rels (returns xml, hfRIdMap, nextId)
+  const { xml: relsXml, hfRIdMap } = docxDocumentRels(links, images, hfFiles);
+
+  // Build sectPr — use template's if available, remapping header/footer rIds
+  let sectPr;
+  if (theme.templateSectPr && hfFiles.length > 0) {
+    sectPr = theme.templateSectPr;
+    // Remap old rIds to new rIds
+    for (const [oldRId, newRId] of Object.entries(hfRIdMap)) {
+      sectPr = sectPr.replace(new RegExp(`r:id="${oldRId}"`, 'g'), `r:id="${newRId}"`);
+    }
+    // Strip attributes we don't need (rsid, etc.)
+    sectPr = sectPr.replace(/\s+w:rsid\w*="[^"]*"/g, '');
+  } else {
+    sectPr = `<w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>`;
+  }
 
   const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -1228,21 +1372,21 @@ function generateDocx(ast, inputPath, theme) {
   xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>
     ${bodyContent}
-    <w:sectPr>
-      <w:pgSz w:w="12240" w:h="15840"/>
-      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
-    </w:sectPr>
+    ${sectPr}
   </w:body>
 </w:document>`;
 
   const zip = new ZipWriter();
-  zip.addFile('[Content_Types].xml', docxContentTypes(imageExts));
+  zip.addFile('[Content_Types].xml', docxContentTypes(imageExts, hfFiles));
   zip.addFile('_rels/.rels', DOCX_ROOT_RELS);
   zip.addFile('word/document.xml', document);
-  zip.addFile('word/_rels/document.xml.rels', docxDocumentRels(links, images));
-  zip.addFile('word/styles.xml', buildDocxStylesXml(theme));
-  zip.addFile('word/numbering.xml', DOCX_NUMBERING);
+  zip.addFile('word/_rels/document.xml.rels', relsXml);
+  zip.addFile('word/styles.xml', resolveDocxStylesXml(theme));
+  zip.addFile('word/numbering.xml', buildDocxNumbering(listInstances));
   zip.addFile('word/theme/theme1.xml', buildThemeXml(theme));
+  for (const hf of hfFiles) {
+    zip.addFile(`word/${hf.target}`, hf.content);
+  }
   for (const img of images) {
     zip.addFile(`word/media/${img.name}`, img.buffer);
   }

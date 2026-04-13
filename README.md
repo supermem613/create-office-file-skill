@@ -32,6 +32,13 @@ Have a corporate template you want to match? Just tell the agent:
 
 The agent uses the `--template` option under the hood to extract theme colors and fonts from any existing `.pptx` or `.docx` file. Cross-format works — a `.pptx` template can style a `.docx` output.
 
+When using a `.docx` template, the agent also extracts the full `styles.xml` (heading styles, title style, fonts, spacing) and any headers/footers (page numbers, classification labels, etc.) so the output matches the template's look and feel.
+
+### DOCX Title and List Behavior
+
+- The first `#` heading becomes the document **Title** (large, themed). Subsequent `#` headings use Heading 1.
+- Each separate list restarts its numbering. Lists separated by headings or paragraphs won't continue counting from a previous list.
+
 ### Supported Markdown
 - Headings (`#` through `######`)
 - Bold (`**text**`), Italic (`*text*`), Bold+Italic (`***text***`)
@@ -95,15 +102,13 @@ No external dependencies. The entire implementation is a single `.mjs` file.
 
 ## Evals
 
-Evals verify generated files open correctly in Microsoft Office and contain the expected content. They use PowerShell COM automation to open files in the actual Word and PowerPoint applications.
+Evals verify generated files contain the expected text, formatting, and structure by parsing OOXML XML directly — no Office installation needed, cross-platform, instant.
 
 ```
 Run evals/run-evals.md
 ```
 
 Results are written to `evals/results/report.md`.
-
-> **Note:** Evals require Windows with Microsoft Office installed (Word + PowerPoint). See [`evals/run-evals.md`](evals/run-evals.md) for details.
 
 ## Tests
 
@@ -116,7 +121,6 @@ Tests validate file structure, markdown parsing, ZIP generation, CRC-32 correctn
 ## Prerequisites
 
 - **Node.js 18+** (the only requirement)
-- **Microsoft Office** (Word + PowerPoint) — only for evals, not for usage
 
 ## Not Supported Yet
 
@@ -124,7 +128,7 @@ Tests validate file structure, markdown parsing, ZIP generation, CRC-32 correctn
 |---------|-----|-----------|
 | Nested lists (3+ levels) | 3 levels covers virtually all real usage | Flatten deeper nesting to level 3 |
 | PDF output | Different format entirely | Use Office's "Save as PDF" |
-| Template slide layouts | Script generates structure from scratch | Edit generated file in Office |
+| Template slide layouts | Script generates PPTX structure from scratch | Edit generated file in Office |
 | Complex tables (merged cells) | OOXML complexity explosion | Simple grid tables only |
 | Remote images (URLs) | Keeps converter synchronous and offline | Pre-download images before conversion |
 | Nested emphasis | Regex parser limitation | Use single emphasis level per span |
