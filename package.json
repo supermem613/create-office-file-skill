@@ -5,11 +5,25 @@
   "scripts": {
     "test": "node --test tests/test-scripts.js"
   },
-  "keywords": ["office", "pptx", "docx", "markdown", "claude", "copilot", "ai", "skill", "powerpoint", "word"],
+  "keywords": [
+    "office",
+    "pptx",
+    "docx",
+    "markdown",
+    "claude",
+    "copilot",
+    "ai",
+    "skill",
+    "powerpoint",
+    "word"
+  ],
   "author": "Marcus Markiewicz",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/supermem613/create-office-file-skill"
+  },
+  "engines": {
+    "node": ">=24.0.0"
   }
 }
