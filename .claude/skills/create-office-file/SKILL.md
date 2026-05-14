@@ -31,6 +31,16 @@ When a `.docx` template is provided, the script also extracts:
 - **Full styles.xml** — heading styles, title style, font defaults, and spacing are faithfully reproduced (style-level `numPr` is stripped to avoid double-numbering since markdown headings already contain their numbering text)
 - **Headers and footers** — `header1.xml`, `footer1.xml`, etc. are carried over with correct `sectPr` references, so page numbers and classification labels appear in the output
 
+### Saving a Portable Template Bundle
+
+Some templates are encrypted (Microsoft Information Protection labels), live on a remote drive, or are content-heavy `.dotx`/`.docx` sources you would rather not redistribute. The `--save-template` flag extracts only the parts the script actually consumes (theme, styles, headers, footers, sectPr) and packages them into a small, portable `.docx` bundle:
+
+```bash
+node $SKILL_DIR/scripts/create-office-file.mjs --template corporate.dotx --save-template corporate-bundle.docx
+```
+
+The bundle is a valid `.docx` openable in Word (the body is a single empty paragraph that picks up the template's section setup). Pass it back as `--template` on subsequent runs to get the same styling without needing the original source.
+
 ## PPTX Slide Splitting
 
 | Markdown | Result |

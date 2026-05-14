@@ -34,6 +34,14 @@ The agent uses the `--template` option under the hood to extract theme colors an
 
 When using a `.docx` template, the agent also extracts the full `styles.xml` (heading styles, title style, fonts, spacing) and any headers/footers (page numbers, classification labels, etc.) so the output matches the template's look and feel.
 
+### Portable Template Bundles
+
+For templates that are MIP-encrypted, live on a remote drive, or are large source documents you would rather not ship around, the agent can save a portable bundle that contains only the styling parts (theme, styles, headers, footers, section setup):
+
+- *"Save a reusable bundle of marketing.dotx so I can drop it into other repos"*
+
+Under the hood this uses `--template <src> --save-template <out.docx>`. The resulting `.docx` is small, openable in Word, and works as a `--template` on subsequent runs.
+
 ### DOCX Title and List Behavior
 
 - The first `#` heading becomes the document **Title** (large, themed). Subsequent `#` headings use Heading 1.

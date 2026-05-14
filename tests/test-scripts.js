@@ -1205,3 +1205,159 @@ describe('Theme — ZIP reader', () => {
     assert.notStrictEqual(result.exitCode, 0, 'Should fail on missing template');
   });
 });
+
+// ============================================================================
+// --save-template: portable bundle round-trip
+// ============================================================================
+
+/**
+ * Build a minimal valid DOCX with a custom theme, styles, header, footer, and
+ * sectPr for use as a template source in the save-template tests.
+ */
+function buildRichDocxTemplate(filePath, opts = {}) {
+  const { deflateRawSync } = require('zlib');
+  function crc(buf) {
+    if (typeof buf === 'string') buf = Buffer.from(buf, 'utf8');
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+    let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  const themeXml = opts.themeXml || '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Bundle"><a:themeElements><a:clrScheme name="B"><a:dk1><a:srgbClr val="010101"/></a:dk1><a:lt1><a:srgbClr val="FAFAFA"/></a:lt1><a:dk2><a:srgbClr val="020202"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="BB0000"/></a:accent1><a:accent2><a:srgbClr val="00BB00"/></a:accent2><a:accent3><a:srgbClr val="0000BB"/></a:accent3><a:accent4><a:srgbClr val="BBBB00"/></a:accent4><a:accent5><a:srgbClr val="BB00BB"/></a:accent5><a:accent6><a:srgbClr val="00BBBB"/></a:accent6><a:hlink><a:srgbClr val="123456"/></a:hlink><a:folHlink><a:srgbClr val="654321"/></a:folHlink></a:clrScheme><a:fontScheme name="B"><a:majorFont><a:latin typeface="BundleMajor"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="BundleMinor"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="B"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+  const stylesXml = opts.stylesXml || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="BundleFont" w:hAnsi="BundleFont"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:b/><w:sz w:val="44"/></w:rPr></w:style></w:styles>';
+  const header = opts.headerXml || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>BundleHeader</w:t></w:r></w:p></w:hdr>';
+  const footer = opts.footerXml || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>BundleFooter</w:t></w:r></w:p></w:ftr>';
+  const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>';
+  const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+  const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>';
+  const doc = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Original body content</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId3"/><w:footerReference w:type="default" r:id="rId4"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>';
+  const files = [
+    { name: '[Content_Types].xml', data: Buffer.from(ct) },
+    { name: '_rels/.rels', data: Buffer.from(rootRels) },
+    { name: 'word/document.xml', data: Buffer.from(doc) },
+    { name: 'word/_rels/document.xml.rels', data: Buffer.from(docRels) },
+    { name: 'word/styles.xml', data: Buffer.from(stylesXml) },
+    { name: 'word/theme/theme1.xml', data: Buffer.from(themeXml) },
+    { name: 'word/header1.xml', data: Buffer.from(header) },
+    { name: 'word/footer1.xml', data: Buffer.from(footer) },
+  ];
+  const locals = [], centrals = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name);
+    const comp = deflateRawSync(f.data);
+    const use = comp.length < f.data.length;
+    const stored = use ? comp : f.data;
+    const method = use ? 8 : 0;
+    const c = crc(f.data);
+    const local = Buffer.alloc(30 + nameBuf.length);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(c, 14); local.writeUInt32LE(stored.length, 18); local.writeUInt32LE(f.data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26); nameBuf.copy(local, 30);
+    locals.push(local, stored);
+    const central = Buffer.alloc(46 + nameBuf.length);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(method, 10); central.writeUInt32LE(c, 16);
+    central.writeUInt32LE(stored.length, 20); central.writeUInt32LE(f.data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
+    nameBuf.copy(central, 46); centrals.push(central);
+    offset += local.length + stored.length;
+  }
+  const cdSz = centrals.reduce((s, b) => s + b.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdSz, 12); eocd.writeUInt32LE(offset, 16);
+  require('fs').writeFileSync(filePath, Buffer.concat([...locals, ...centrals, eocd]));
+}
+
+describe('--save-template — portable bundle round-trip', () => {
+  it('writes a bundle containing only the reusable template parts', () => {
+    const src = join(__dirname, '_test_save_src.docx');
+    const bundle = join(__dirname, '_test_save_bundle.docx');
+    try {
+      buildRichDocxTemplate(src);
+      const result = run(`--template "${src}" --save-template "${bundle}"`);
+      assert.strictEqual(result.exitCode, 0, `save-template should succeed (stderr: ${result.stderr})`);
+      assert.ok(existsSync(bundle), 'bundle file should exist');
+      const buf = readFileSync(bundle);
+      const entries = zipEntries(buf);
+      assert.ok(entries.includes('[Content_Types].xml'));
+      assert.ok(entries.includes('_rels/.rels'));
+      assert.ok(entries.includes('word/document.xml'));
+      assert.ok(entries.includes('word/_rels/document.xml.rels'));
+      assert.ok(entries.includes('word/theme/theme1.xml'));
+      assert.ok(entries.includes('word/styles.xml'));
+      assert.ok(entries.includes('word/header1.xml'));
+      assert.ok(entries.includes('word/footer1.xml'));
+      // Image, settings, fontTable, numbering should NOT have been carried over
+      assert.ok(!entries.some(e => e.startsWith('word/media/')), 'should not include image parts');
+      // Document body should be a stub, not the original content
+      const docXml = zipExtract(buf, 'word/document.xml');
+      assert.ok(!docXml.includes('Original body content'), 'stub body should replace original content');
+      assert.ok(docXml.includes('<w:sectPr'), 'stub should preserve sectPr');
+      assert.ok(docXml.includes('w:headerReference'), 'stub sectPr should keep header reference');
+      // Rels should be filtered: keep styles, theme, header, footer; drop image
+      const relsXml = zipExtract(buf, 'word/_rels/document.xml.rels');
+      assert.ok(/Type="[^"]*\/styles"/.test(relsXml), 'rels should keep styles');
+      assert.ok(/Type="[^"]*\/theme"/.test(relsXml), 'rels should keep theme');
+      assert.ok(/Type="[^"]*\/header"/.test(relsXml), 'rels should keep header');
+      assert.ok(/Type="[^"]*\/footer"/.test(relsXml), 'rels should keep footer');
+      assert.ok(!/Type="[^"]*\/image"/.test(relsXml), 'rels should drop image');
+      // Theme and styles should be the original verbatim
+      const themeOut = zipExtract(buf, 'word/theme/theme1.xml');
+      assert.ok(themeOut.includes('BundleMajor'), 'theme major font should be preserved');
+      const stylesOut = zipExtract(buf, 'word/styles.xml');
+      assert.ok(stylesOut.includes('BundleFont'), 'styles font should be preserved');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+      try { require('fs').unlinkSync(bundle); } catch {}
+    }
+  });
+
+  it('bundle is consumable as --template for a real document', () => {
+    const src = join(__dirname, '_test_save_src2.docx');
+    const bundle = join(__dirname, '_test_save_bundle2.docx');
+    try {
+      buildRichDocxTemplate(src);
+      const r1 = run(`--template "${src}" --save-template "${bundle}"`);
+      assert.strictEqual(r1.exitCode, 0, `bundle creation should succeed (stderr: ${r1.stderr})`);
+      const buf = generateWithTemplate('# Hello\nBody text.', 'docx', bundle);
+      const styles = zipExtract(buf, 'word/styles.xml');
+      assert.ok(styles.includes('BundleFont'), 'output styles should carry the bundled font');
+      const theme = zipExtract(buf, 'word/theme/theme1.xml');
+      assert.ok(theme.includes('BundleMajor'), 'output theme should carry the bundled major font');
+      const entries = zipEntries(buf);
+      assert.ok(entries.includes('word/header1.xml'), 'output should carry the bundled header');
+      assert.ok(entries.includes('word/footer1.xml'), 'output should carry the bundled footer');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+      try { require('fs').unlinkSync(bundle); } catch {}
+    }
+  });
+
+  it('errors when --save-template is used without --template', () => {
+    const result = run(`--save-template "${join(__dirname, '_unused.docx')}"`);
+    assert.notStrictEqual(result.exitCode, 0, 'should fail without --template');
+    assert.ok(/requires --template/i.test(result.stderr), `expected error message about --template, got: ${result.stderr}`);
+  });
+
+  it('PPTX source produces a theme-only bundle', () => {
+    const src = join(__dirname, '_test_save_src.pptx');
+    const bundle = join(__dirname, '_test_save_bundle3.docx');
+    try {
+      const themeXml = '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="P"><a:themeElements><a:clrScheme name="P"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="111111"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="123456"/></a:accent1><a:accent2><a:srgbClr val="234567"/></a:accent2><a:accent3><a:srgbClr val="345678"/></a:accent3><a:accent4><a:srgbClr val="456789"/></a:accent4><a:accent5><a:srgbClr val="56789A"/></a:accent5><a:accent6><a:srgbClr val="6789AB"/></a:accent6><a:hlink><a:srgbClr val="789ABC"/></a:hlink><a:folHlink><a:srgbClr val="89ABCD"/></a:folHlink></a:clrScheme><a:fontScheme name="P"><a:majorFont><a:latin typeface="PptxMajor"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="PptxMinor"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="P"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+      require('fs').writeFileSync(src, createTestTemplate(themeXml));
+      const r1 = run(`--template "${src}" --save-template "${bundle}"`);
+      assert.strictEqual(r1.exitCode, 0, `pptx-to-bundle should succeed (stderr: ${r1.stderr})`);
+      const buf = readFileSync(bundle);
+      const entries = zipEntries(buf);
+      assert.ok(entries.includes('word/theme/theme1.xml'), 'bundle should have a theme part');
+      assert.ok(!entries.includes('word/styles.xml'), 'pptx source has no styles to carry over');
+      assert.ok(!entries.some(e => /^word\/(header|footer)/.test(e)), 'pptx source has no headers/footers');
+      const themeOut = zipExtract(buf, 'word/theme/theme1.xml');
+      assert.ok(themeOut.includes('PptxMajor'), 'theme major font should be preserved');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+      try { require('fs').unlinkSync(bundle); } catch {}
+    }
+  });
+});

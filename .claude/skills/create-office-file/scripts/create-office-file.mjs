@@ -475,6 +475,137 @@ function mergeTheme(base, overrides) {
 }
 
 // ============================================================================
+// Template Bundle Extraction
+// ============================================================================
+// extractRawTemplateParts pulls the raw OOXML fragments the template-extractor
+// actually consumes (theme, styles, sectPr, headers, footers, relationships).
+// buildTemplateBundle wraps those fragments into a minimal valid .docx file
+// that the same extractor can read back. The result is portable, openable in
+// Word, and dramatically smaller than the source when the source is a
+// content-heavy document.
+
+function extractRawTemplateParts(srcPath) {
+  const buf = readFileSync(srcPath);
+  const zip = new ZipReader(buf);
+  const parts = {
+    themeXml: null,
+    stylesXml: null,
+    documentSectPr: null,
+    documentRels: [],
+    headerFooters: [],
+  };
+  for (const p of ['word/theme/theme1.xml', 'ppt/theme/theme1.xml']) {
+    const data = zip.getFile(p);
+    if (data) { parts.themeXml = data.toString('utf8'); break; }
+  }
+  const stylesData = zip.getFile('word/styles.xml');
+  if (stylesData) parts.stylesXml = stylesData.toString('utf8');
+  const relsData = zip.getFile('word/_rels/document.xml.rels');
+  if (relsData) {
+    const relsXml = relsData.toString('utf8');
+    const relRe = /<Relationship\b([^>]*)\/?>/g;
+    let m;
+    while ((m = relRe.exec(relsXml)) !== null) {
+      const attrs = m[1];
+      const id = (attrs.match(/\bId="([^"]+)"/) || [])[1];
+      const type = (attrs.match(/\bType="([^"]+)"/) || [])[1];
+      const target = (attrs.match(/\bTarget="([^"]+)"/) || [])[1];
+      if (id && type && target) parts.documentRels.push({ id, type, target });
+    }
+    for (const r of parts.documentRels) {
+      const hfMatch = r.type.match(/\/(header|footer)$/);
+      if (hfMatch) {
+        const filePath = `word/${r.target}`;
+        const data = zip.getFile(filePath);
+        if (data) parts.headerFooters.push({ rId: r.id, type: hfMatch[1], target: r.target, content: data });
+      }
+    }
+  }
+  const docData = zip.getFile('word/document.xml');
+  if (docData) {
+    const m = docData.toString('utf8').match(/<w:sectPr[\s\S]*?<\/w:sectPr>/);
+    if (m) parts.documentSectPr = m[0];
+  }
+  return parts;
+}
+
+function buildTemplateBundle(parts) {
+  // Keep only the relationships the script's extractor will read back.
+  // Numbering, settings, fontTable, images, hyperlinks are dropped because
+  // they are either regenerated per-document or not template-derived.
+  const KEEP_TYPES = /\/(styles|theme|header|footer)$/;
+  const keptRels = (parts.documentRels || []).filter(r => KEEP_TYPES.test(r.type));
+  const usedIds = new Set(keptRels.map(r => r.id));
+  function nextRId() {
+    let n = 1;
+    while (usedIds.has(`rId${n}`)) n++;
+    const id = `rId${n}`;
+    usedIds.add(id);
+    return id;
+  }
+  if (!keptRels.some(r => /\/theme$/.test(r.type))) {
+    keptRels.push({
+      id: nextRId(),
+      type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme',
+      target: 'theme/theme1.xml',
+    });
+  }
+  if (parts.stylesXml && !keptRels.some(r => /\/styles$/.test(r.type))) {
+    keptRels.push({
+      id: nextRId(),
+      type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles',
+      target: 'styles.xml',
+    });
+  }
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${keptRels.map(r => `  <Relationship Id="${r.id}" Type="${r.type}" Target="${r.target}"/>`).join('\n')}
+</Relationships>`;
+
+  const sectPr = parts.documentSectPr || `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`;
+  const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p/>
+    ${sectPr}
+  </w:body>
+</w:document>`;
+
+  let typeOverrides = '';
+  typeOverrides += `  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>\n`;
+  typeOverrides += `  <Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>\n`;
+  if (parts.stylesXml) {
+    typeOverrides += `  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>\n`;
+  }
+  for (const hf of parts.headerFooters) {
+    const ct = hf.type === 'header'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml'
+      : 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml';
+    typeOverrides += `  <Override PartName="/word/${hf.target}" ContentType="${ct}"/>\n`;
+  }
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+${typeOverrides}</Types>`;
+
+  const themeXml = parts.themeXml || buildThemeXml(defaultTheme());
+
+  const zip = new ZipWriter();
+  zip.addFile('[Content_Types].xml', contentTypes);
+  zip.addFile('_rels/.rels', DOCX_ROOT_RELS);
+  zip.addFile('word/document.xml', document);
+  zip.addFile('word/_rels/document.xml.rels', relsXml);
+  zip.addFile('word/theme/theme1.xml', themeXml);
+  if (parts.stylesXml) zip.addFile('word/styles.xml', parts.stylesXml);
+  for (const hf of parts.headerFooters) {
+    zip.addFile(`word/${hf.target}`, hf.content);
+  }
+  return zip.toBuffer();
+}
+
+// ============================================================================
 // Markdown Parser (constrained subset → AST)
 // ============================================================================
 
@@ -1403,22 +1534,26 @@ function usage() {
 
 Options:
   -i, --input <file>       Input markdown file (or reads stdin)
-  -o, --output <file>      Output file path (required)
+  -o, --output <file>      Output file path (required unless --save-template)
   -f, --format <fmt>       Output format: pptx or docx (auto-detected from -o extension)
   -t, --template <file>    Template .pptx or .docx file (extracts theme colors and fonts)
+  --save-template <file>   Extract template parts (theme, styles, headers/footers, sectPr)
+                           into a portable .docx bundle. Requires --template. When given,
+                           the script writes only the bundle and skips doc generation.
   -h, --help               Show this help
 
 Examples:
   node create-office-file.mjs -i slides.md -o presentation.pptx
   node create-office-file.mjs -i report.md -o document.docx
   node create-office-file.mjs -i slides.md -o out.pptx --template corporate.pptx
+  node create-office-file.mjs --template corporate.dotx --save-template corporate-bundle.docx
   cat notes.md | node create-office-file.mjs -o notes.docx`);
   process.exit(1);
 }
 
 function main() {
   const args = process.argv.slice(2);
-  let input = null, output = null, format = null, template = null;
+  let input = null, output = null, format = null, template = null, saveTemplate = null;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -1429,10 +1564,29 @@ function main() {
         if (format !== 'pptx' && format !== 'docx') { console.error(`Error: unsupported format '${format}', use pptx or docx`); usage(); }
         break;
       case '-t': case '--template': template = args[++i]; break;
+      case '--save-template': saveTemplate = args[++i]; break;
       case '-h': case '--help': usage(); break;
       default:
         if (!output && args[i].match(/\.(pptx|docx)$/i)) output = args[i];
         else if (!input && existsSync(args[i])) input = args[i];
+    }
+  }
+
+  // --save-template: extract the source template's reusable parts into a
+  // portable .docx bundle and exit. No markdown input or output doc required.
+  if (saveTemplate) {
+    if (!template) { console.error('Error: --save-template requires --template'); process.exit(1); }
+    const templatePath = resolve(template);
+    if (!existsSync(templatePath)) { console.error(`Error: template file not found: ${template}`); process.exit(1); }
+    try {
+      const parts = extractRawTemplateParts(templatePath);
+      const bundle = buildTemplateBundle(parts);
+      const outPath = resolve(saveTemplate);
+      writeFileSync(outPath, bundle);
+      console.error(`Wrote template bundle: ${outPath} (${bundle.length} bytes)`);
+      return;
+    } catch (e) {
+      console.error(`Error: failed to write template bundle: ${e.message}`); process.exit(1);
     }
   }
 
