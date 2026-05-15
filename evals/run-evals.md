@@ -184,6 +184,15 @@ before launching the sub-agent.
 
 ---
 
+## DOCX — Heading Auto-Numbering (1)
+
+### 118 — DOCX from template preserves heading auto-numbering
+**Setup:** Run `node evals/create-heading-numbering-template.mjs evals/results/eval118_template.docx` to create a DOCX template whose Heading1..Heading3 styles bind to a multilevel decimal numbered list.
+**Prompt:** Create a Word document from `evals/inputs/118.md` using `evals/results/eval118_template.docx` as template, and save it to `evals/results/118.docx`
+**Pass if:** No `.error`; the output's `word/styles.xml` keeps `<w:numPr>` on `Heading1`, `Heading2`, and `Heading3`; the markdown numeric prefixes ("1.", "1.1", etc.) are stripped from heading text so the rendered numbering comes from the template; markdown headings are promoted by one (`##` -> `Heading1`, `###` -> `Heading2`); the first `#` still maps to `Title`.
+
+---
+
 ## PPTX — Structure (3)
 
 ### 200 — Title slide

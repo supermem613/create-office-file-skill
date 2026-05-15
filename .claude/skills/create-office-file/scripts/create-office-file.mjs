@@ -367,17 +367,66 @@ function buildDocxStylesXml(theme) {
     <w:pPr><w:spacing w:after="0" w:line="204" w:lineRule="auto"/><w:contextualSpacing/></w:pPr>
     <w:rPr><w:rFonts w:ascii="${f.major}" w:hAnsi="${f.major}"/><w:caps/><w:color w:val="${c.accent1}"/><w:spacing w:val="-15"/><w:sz w:val="72"/><w:szCs w:val="72"/></w:rPr>
   </w:style>
+  <w:style w:type="paragraph" w:styleId="ListBullet">
+    <w:name w:val="List Bullet"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="360" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListBullet2">
+    <w:name w:val="List Bullet 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="720" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListBullet3">
+    <w:name w:val="List Bullet 3"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="1080" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListNumber">
+    <w:name w:val="List Number"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="360" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListNumber2">
+    <w:name w:val="List Number 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="720" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListNumber3">
+    <w:name w:val="List Number 3"/>
+    <w:basedOn w:val="Normal"/>
+    <w:uiPriority w:val="99"/>
+    <w:pPr><w:ind w:left="1080" w:hanging="360"/><w:contextualSpacing/></w:pPr>
+  </w:style>
 </w:styles>`;
 }
 
 function resolveDocxStylesXml(theme) {
   if (!theme.rawStylesXml) return buildDocxStylesXml(theme);
-  // Use template styles but strip auto-numbering from ALL style definitions —
-  // our document applies numbering explicitly at the paragraph level via numPr,
-  // so style-level numPr would conflict and cause double-numbering or
-  // unexpected numbering on paragraphs that inherit from numbered styles.
   let styles = theme.rawStylesXml;
-  styles = styles.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
+  if (theme.templateHasHeadingNumbering) {
+    // Strip <w:numPr> from non-heading styles only. Heading styles keep their
+    // numPr so Word's auto-numbering renders the template's "1", "1.1", ...
+    // multilevel scheme. Markdown-driven lists at the paragraph level live on
+    // separate, offset numIds (see mergeDocxNumbering), so they cannot collide.
+    styles = styles.replace(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g, (full, attrs, body) => {
+      const idMatch = attrs.match(/w:styleId="([^"]+)"/);
+      const id = idMatch ? idMatch[1] : '';
+      if (/^Heading\d+$/.test(id)) return full;
+      const cleaned = body.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
+      return `<w:style${attrs}>${cleaned}</w:style>`;
+    });
+  } else {
+    // No template heading numbering — strip auto-numbering from ALL style
+    // definitions so it cannot conflict with paragraph-level numPr the
+    // markdown driver applies on bullet/ordered list items.
+    styles = styles.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/g, '');
+  }
   const extras = [];
   if (!styles.includes('styleId="CodeBlock"')) {
     extras.push(`<w:style w:type="paragraph" w:styleId="CodeBlock">
@@ -392,6 +441,25 @@ function resolveDocxStylesXml(theme) {
     <w:name w:val="Hyperlink"/>
     <w:rPr><w:color w:val="${theme.colors.hlink}"/><w:u w:val="single"/></w:rPr>
   </w:style>`);
+  }
+  // Word's built-in List Bullet / List Number styles. Templates such as the
+  // KA Dev Plan dotx do not predeclare these, so emit minimal definitions
+  // when missing. The actual bullet glyph and numbering value come from the
+  // paragraph-level <w:numPr> the markdown driver writes; the style only
+  // needs to exist so Word reports `Style.NameLocal = "List Bullet"` on
+  // those paragraphs (matching the COM wrapper's `Set-Style 'List Bullet'`).
+  const listStyles = [
+    ['ListBullet', 'List Bullet', 360],
+    ['ListBullet2', 'List Bullet 2', 720],
+    ['ListBullet3', 'List Bullet 3', 1080],
+    ['ListNumber', 'List Number', 360],
+    ['ListNumber2', 'List Number 2', 720],
+    ['ListNumber3', 'List Number 3', 1080],
+  ];
+  for (const [id, name, indent] of listStyles) {
+    if (!styles.includes(`styleId="${id}"`)) {
+      extras.push(`<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="99"/><w:pPr><w:ind w:left="${indent}" w:hanging="360"/><w:contextualSpacing/></w:pPr></w:style>`);
+    }
   }
   if (extras.length > 0) {
     styles = styles.replace('</w:styles>', extras.join('\n') + '\n</w:styles>');
@@ -419,8 +487,24 @@ function parseThemeFonts(xml) {
   return fonts;
 }
 
+// OLE Compound File magic: D0 CF 11 E0 A1 B1 1A E1.
+// Encrypted Office files (e.g., MIP-labeled documents) are OLE-wrapped instead
+// of plain OOXML ZIPs, so the ZIP reader cannot parse them. Detect this case
+// up front and surface a clear error rather than the generic "EOCD not found".
+const OLE_MAGIC = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+
+function checkOleWrapped(buf, templatePath) {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(OLE_MAGIC)) {
+    throw new Error(
+      `Template appears to be encrypted or labeled with Microsoft Information Protection (OLE-wrapped, not a plain OOXML ZIP): ${templatePath}\n` +
+      `  Open it in Word, remove or change the sensitivity label, and save it as a plain .docx (or use the original .dotx).`
+    );
+  }
+}
+
 function extractThemeFromTemplate(templatePath) {
   const buf = readFileSync(templatePath);
+  checkOleWrapped(buf, templatePath);
   const zip = new ZipReader(buf);
   let themeXml = null;
   for (const p of ['ppt/theme/theme1.xml', 'word/theme/theme1.xml']) {
@@ -436,6 +520,29 @@ function extractThemeFromTemplate(templatePath) {
   // Extract styles.xml from DOCX templates for faithful style reproduction
   const stylesData = zip.getFile('word/styles.xml');
   if (stylesData) overrides.rawStylesXml = stylesData.toString('utf8');
+  // Extract numbering.xml so we can preserve template heading auto-numbering.
+  // Also detect which numIds the template's heading styles reference so the
+  // numbering merger and the document body know to keep them intact.
+  const numberingData = zip.getFile('word/numbering.xml');
+  if (numberingData) overrides.rawNumberingXml = numberingData.toString('utf8');
+  if (overrides.rawStylesXml) {
+    const headingNumIds = new Set();
+    // Find all <w:style ... w:styleId="HeadingN"> ... </w:style> blocks and
+    // collect every <w:numId w:val="N"/> reference inside them.
+    const styleRe = /<w:style\b[^>]*w:styleId="(Heading\d+)"[^>]*>([\s\S]*?)<\/w:style>/g;
+    let sm;
+    while ((sm = styleRe.exec(overrides.rawStylesXml)) !== null) {
+      const numIdRe = /<w:numId\s+w:val="(\d+)"\s*\/?>/g;
+      let nm;
+      while ((nm = numIdRe.exec(sm[2])) !== null) {
+        headingNumIds.add(parseInt(nm[1], 10));
+      }
+    }
+    if (headingNumIds.size > 0) {
+      overrides.headingNumIds = [...headingNumIds].sort((a, b) => a - b);
+      overrides.templateHasHeadingNumbering = true;
+    }
+  }
   // Extract headers and footers from DOCX templates
   const headerFooterFiles = [];
   const rels = zip.getFile('word/_rels/document.xml.rels');
@@ -469,6 +576,9 @@ function mergeTheme(base, overrides) {
     colors: { ...base.colors, ...(overrides.colors || {}) },
     fonts: { ...base.fonts, ...(overrides.fonts || {}) },
     rawStylesXml: overrides.rawStylesXml || null,
+    rawNumberingXml: overrides.rawNumberingXml || null,
+    headingNumIds: overrides.headingNumIds || [],
+    templateHasHeadingNumbering: !!overrides.templateHasHeadingNumbering,
     headerFooterFiles: overrides.headerFooterFiles || [],
     templateSectPr: overrides.templateSectPr || null,
   };
@@ -486,10 +596,12 @@ function mergeTheme(base, overrides) {
 
 function extractRawTemplateParts(srcPath) {
   const buf = readFileSync(srcPath);
+  checkOleWrapped(buf, srcPath);
   const zip = new ZipReader(buf);
   const parts = {
     themeXml: null,
     stylesXml: null,
+    numberingXml: null,
     documentSectPr: null,
     documentRels: [],
     headerFooters: [],
@@ -500,6 +612,8 @@ function extractRawTemplateParts(srcPath) {
   }
   const stylesData = zip.getFile('word/styles.xml');
   if (stylesData) parts.stylesXml = stylesData.toString('utf8');
+  const numberingData = zip.getFile('word/numbering.xml');
+  if (numberingData) parts.numberingXml = numberingData.toString('utf8');
   const relsData = zip.getFile('word/_rels/document.xml.rels');
   if (relsData) {
     const relsXml = relsData.toString('utf8');
@@ -530,10 +644,10 @@ function extractRawTemplateParts(srcPath) {
 }
 
 function buildTemplateBundle(parts) {
-  // Keep only the relationships the script's extractor will read back.
-  // Numbering, settings, fontTable, images, hyperlinks are dropped because
-  // they are either regenerated per-document or not template-derived.
-  const KEEP_TYPES = /\/(styles|theme|header|footer)$/;
+  // Keep only the relationships the script's extractor will read back. The
+  // template's own numbering.xml is preserved so heading auto-numbering
+  // survives in the bundle (we add the rel ourselves below).
+  const KEEP_TYPES = /\/(styles|theme|header|footer|numbering)$/;
   const keptRels = (parts.documentRels || []).filter(r => KEEP_TYPES.test(r.type));
   const usedIds = new Set(keptRels.map(r => r.id));
   function nextRId() {
@@ -557,6 +671,13 @@ function buildTemplateBundle(parts) {
       target: 'styles.xml',
     });
   }
+  if (parts.numberingXml && !keptRels.some(r => /\/numbering$/.test(r.type))) {
+    keptRels.push({
+      id: nextRId(),
+      type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering',
+      target: 'numbering.xml',
+    });
+  }
   const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 ${keptRels.map(r => `  <Relationship Id="${r.id}" Type="${r.type}" Target="${r.target}"/>`).join('\n')}
@@ -577,6 +698,9 @@ ${keptRels.map(r => `  <Relationship Id="${r.id}" Type="${r.type}" Target="${r.t
   typeOverrides += `  <Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>\n`;
   if (parts.stylesXml) {
     typeOverrides += `  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>\n`;
+  }
+  if (parts.numberingXml) {
+    typeOverrides += `  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>\n`;
   }
   for (const hf of parts.headerFooters) {
     const ct = hf.type === 'header'
@@ -599,6 +723,7 @@ ${typeOverrides}</Types>`;
   zip.addFile('word/_rels/document.xml.rels', relsXml);
   zip.addFile('word/theme/theme1.xml', themeXml);
   if (parts.stylesXml) zip.addFile('word/styles.xml', parts.stylesXml);
+  if (parts.numberingXml) zip.addFile('word/numbering.xml', parts.numberingXml);
   for (const hf of parts.headerFooters) {
     zip.addFile(`word/${hf.target}`, hf.content);
   }
@@ -617,7 +742,7 @@ ${typeOverrides}</Types>`;
  *   { type: 'ordered_list', items: [{ level: 0, children: [inline...] }] }
  *   { type: 'code_block', lang: string, text: string }
  *   { type: 'hr' }
- *   { type: 'table', headers: [string...], rows: [[string...]...] }
+ *   { type: 'table', headers: [inline[]...], rows: [[inline[]...]...] }
  *
  * Inline types:
  *   { type: 'text', text: string }
@@ -691,7 +816,7 @@ function parseMarkdown(md) {
 
     // Table (look for | in current line and separator line next)
     if (line.includes('|') && i + 1 < lines.length && /^\|?[\s:]*-+[\s:]*/.test(lines[i + 1])) {
-      const parseRow = r => r.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+      const parseRow = r => r.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => parseInline(c.trim()));
       const headers = parseRow(line);
       i += 2; // skip header + separator
       const rows = [];
@@ -1054,9 +1179,19 @@ function buildTableSlide(title, table, startShapeId, theme) {
   const colW = Math.floor(11277600 / numCols);
   const gridCols = table.headers.map(() => `<a:gridCol w="${colW}"/>`).join('');
 
-  const mkCell = (text, bold) => {
+  // Cells are inline-AST arrays as of the table-inline-formatting fix. PPTX
+  // tables in this script do not yet render rich inline runs, so flatten each
+  // cell to its concatenated plain text. Bold/italic/code formatting inside
+  // PPTX table cells is a known gap for a future change.
+  const cellText = (children) => {
+    if (typeof children === 'string') return children;
+    if (!Array.isArray(children)) return '';
+    return children.map(c => c && typeof c.text === 'string' ? c.text : '').join('');
+  };
+
+  const mkCell = (children, bold) => {
     const rPr = bold ? '<a:rPr lang="en-US" sz="1400" b="1" dirty="0"/>' : '<a:rPr lang="en-US" sz="1400" dirty="0"/>';
-    return `<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r>${rPr}<a:t>${esc(text)}</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>`;
+    return `<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r>${rPr}<a:t>${esc(cellText(children))}</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>`;
   };
 
   const headerRow = `<a:tr h="370840">${table.headers.map(h => mkCell(h, true)).join('')}</a:tr>`;
@@ -1318,6 +1453,55 @@ ${DOCX_NUMBERING_BASE_ORDERED}`;
   return xml;
 }
 
+// mergeDocxNumbering preserves the template's numbering definitions (the
+// abstractNum/num pairs that bind heading styles to "1", "1.1", ... outline
+// formatting) and appends two script-owned bullet/ordered abstractNums plus
+// one <w:num> per markdown list, all at offset numIds beyond the template max.
+// Returns the merged XML and a mapping function that translates a 1-based
+// script list index (1..N) to the offset numId used in document.xml.
+function mergeDocxNumbering(listInstances, templateNumberingXml) {
+  // Find the highest abstractNumId and numId currently in the template.
+  const absRe = /<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"/g;
+  const numRe = /<w:num\b[^>]*w:numId="(\d+)"/g;
+  let maxAbs = -1, maxNum = 0;
+  let m;
+  while ((m = absRe.exec(templateNumberingXml)) !== null) {
+    maxAbs = Math.max(maxAbs, parseInt(m[1], 10));
+  }
+  while ((m = numRe.exec(templateNumberingXml)) !== null) {
+    maxNum = Math.max(maxNum, parseInt(m[1], 10));
+  }
+  const bulletAbs = maxAbs + 1;
+  const orderedAbs = maxAbs + 2;
+  const numIdOffset = maxNum;
+
+  // Re-emit the script's bullet/ordered abstractNums at the offset abstractNumIds.
+  const bulletAbsXml = DOCX_NUMBERING_BASE_BULLET.replace(
+    /w:abstractNumId="0"/, `w:abstractNumId="${bulletAbs}"`,
+  );
+  const orderedAbsXml = DOCX_NUMBERING_BASE_ORDERED.replace(
+    /w:abstractNumId="1"/, `w:abstractNumId="${orderedAbs}"`,
+  );
+
+  let scriptNums = '';
+  for (let i = 0; i < listInstances.length; i++) {
+    const numId = numIdOffset + i + 1;
+    const absId = listInstances[i].type === 'bullet' ? bulletAbs : orderedAbs;
+    const restart = `<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride><w:lvlOverride w:ilvl="1"><w:startOverride w:val="1"/></w:lvlOverride><w:lvlOverride w:ilvl="2"><w:startOverride w:val="1"/></w:lvlOverride>`;
+    scriptNums += `\n  <w:num w:numId="${numId}"><w:abstractNumId w:val="${absId}"/>${restart}</w:num>`;
+  }
+
+  // Inject the new abstractNums and nums just before </w:numbering>.
+  const merged = templateNumberingXml.replace(
+    /<\/w:numbering>\s*$/,
+    `\n${bulletAbsXml}\n${orderedAbsXml}${scriptNums}\n</w:numbering>`,
+  );
+
+  // Return the offset so callers can rewrite document.xml numId references.
+  const remapNumId = (scriptOneBasedIndex) => numIdOffset + scriptOneBasedIndex;
+  return { xml: merged, remapNumId };
+}
+
 function inlineToWordML(children, links, images, inputPath, theme, rIdBase) {
   const base = rIdBase || 3; // rId1=styles, rId2=numbering, rId3=theme; links start after base
   return children.map(c => {
@@ -1361,6 +1545,14 @@ function astToDocxBody(ast, links, images, inputPath, theme, rIdBase) {
   let docPrId = 1; // unique ID counter for wp:docPr
   let firstH1Seen = false; // track whether first H1 has been emitted as Title
 
+  // When the template defines heading auto-numbering, Word will render the
+  // "1", "1.1", ... prefixes itself. In that case we strip any leading
+  // manual numbering from heading text (so we don't double up) and we promote
+  // each heading level by one so that markdown's first `##` becomes the
+  // template's Heading1 ("1"), the next `###` becomes Heading2 ("1.1"), etc.
+  // The first `#` still becomes Title.
+  const useTemplateHeadingNumbering = !!theme.templateHasHeadingNumbering;
+
   // Track list numbering: each separate list (bullet or ordered) gets a unique
   // numId so numbering restarts per list and bullet lists don't share state.
   // We collect all list instances and generate numbering.xml accordingly.
@@ -1370,15 +1562,37 @@ function astToDocxBody(ast, links, images, inputPath, theme, rIdBase) {
   const DOCX_IMG_MAX_W = 6.5 * 914400;
   const DOCX_IMG_MAX_H = 9 * 914400;
 
+  // When merging with template numbering, our list numIds must live beyond
+  // the template's existing numId range so they cannot collide with the
+  // template's heading-numbering numIds.
+  let scriptNumIdOffset = 0;
+  if (theme.rawNumberingXml) {
+    const numRe = /<w:num\b[^>]*w:numId="(\d+)"/g;
+    let m;
+    while ((m = numRe.exec(theme.rawNumberingXml)) !== null) {
+      scriptNumIdOffset = Math.max(scriptNumIdOffset, parseInt(m[1], 10));
+    }
+  }
+
   for (const node of ast) {
     switch (node.type) {
       case 'heading': {
-        const level = Math.min(node.level, 6);
+        let level = Math.min(node.level, 6);
         let styleId;
         if (level === 1 && !firstH1Seen) {
           styleId = 'Title';
           firstH1Seen = true;
         } else {
+          if (useTemplateHeadingNumbering) {
+            level = Math.max(1, Math.min(level - 1, 9));
+            // Strip a leading "1.", "1.1", "1.1.1", ... numbering prefix from
+            // the first text child so the template's own multilevel numbering
+            // does not double up on it.
+            const numericPrefix = /^\s*\d+(\.\d+){0,8}\.?\s+/;
+            if (node.children && node.children.length > 0 && node.children[0].text) {
+              node.children[0].text = node.children[0].text.replace(numericPrefix, '');
+            }
+          }
           styleId = `Heading${level}`;
         }
         body += `<w:p><w:pPr><w:pStyle w:val="${styleId}"/></w:pPr>${inlineToWordML(node.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
@@ -1407,19 +1621,26 @@ function astToDocxBody(ast, links, images, inputPath, theme, rIdBase) {
       }
       case 'bullet_list': {
         listInstances.push({ type: 'bullet' });
-        const listNumId = listInstances.length; // 1-based
+        const listNumId = scriptNumIdOffset + listInstances.length; // 1-based, plus offset
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
+          // Style is ListBullet / ListBullet2 / ListBullet3 by level so Word
+          // reports the paragraph style as "List Bullet" (matching Word's
+          // built-in styles) instead of "Normal". Paragraph-level numPr stays
+          // because it is what makes separate lists restart from the first
+          // bullet and what threads the markdown indent into the right level.
+          const styleId = lvl === 0 ? 'ListBullet' : `ListBullet${lvl + 1}`;
+          body += `<w:p><w:pPr><w:pStyle w:val="${styleId}"/><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         }
         break;
       }
       case 'ordered_list': {
         listInstances.push({ type: 'ordered' });
-        const listNumId = listInstances.length; // 1-based
+        const listNumId = scriptNumIdOffset + listInstances.length; // 1-based, plus offset
         for (const item of node.items) {
           const lvl = item.level || 0;
-          body += `<w:p><w:pPr><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
+          const styleId = lvl === 0 ? 'ListNumber' : `ListNumber${lvl + 1}`;
+          body += `<w:p><w:pPr><w:pStyle w:val="${styleId}"/><w:numPr><w:ilvl w:val="${lvl}"/><w:numId w:val="${listNumId}"/></w:numPr></w:pPr>${inlineToWordML(item.children, links, images, inputPath, theme, rIdBase)}</w:p>`;
         }
         break;
       }
@@ -1444,13 +1665,37 @@ function astToDocxBody(ast, links, images, inputPath, theme, rIdBase) {
           <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
         </w:tblBorders>`;
 
+        // Cells are inline AST arrays so `code`, **bold**, *italic*, links,
+        // and images inside markdown table cells survive the conversion.
+        // Header cells force bold on every run by injecting <w:b/> into the
+        // <w:rPr> emitted for each text/code/italic run, plus a paragraph-
+        // level <w:pPr><w:rPr><w:b/></w:rPr></w:pPr> so the cell's paragraph
+        // mark itself is bold (which is how Word's built-in List Bullet and
+        // Grid Table 4 - Accent 1 styles propagate emphasis across the full
+        // cell, including whitespace).
+        const renderCell = (children, forceBold) => {
+          let runs = inlineToWordML(children, links, images, inputPath, theme, rIdBase);
+          if (forceBold) {
+            runs = runs.replace(/<w:rPr>/g, '<w:rPr><w:b/>');
+            // Runs that have no <w:rPr> at all also need bold.
+            runs = runs.replace(/<w:r>(?!<w:rPr>)/g, '<w:r><w:rPr><w:b/></w:rPr>');
+          }
+          if (!runs) runs = '<w:r><w:t></w:t></w:r>';
+          const pPr = forceBold ? '<w:pPr><w:rPr><w:b/></w:rPr></w:pPr>' : '';
+          return `${pPr}${runs}`;
+        };
+
         const headerRow = `<w:tr>${node.headers.map(h =>
-          `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.tableHeaderFill}"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${esc(h)}</w:t></w:r></w:p></w:tc>`
+          `<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="${theme.colors.tableHeaderFill}"/></w:tcPr><w:p>${renderCell(h, true)}</w:p></w:tc>`
         ).join('')}</w:tr>`;
 
+        // Word's built-in Grid Table 4 - Accent 1 (which the COM wrapper uses
+        // verbatim) auto-bolds the first column. We mirror that as the table
+        // default so a markdown table whose first column carries field names
+        // or labels reads the same way it does when Word styles it natively.
         const dataRows = node.rows.map(row =>
-          `<w:tr>${row.map(cell =>
-            `<w:tc><w:p><w:r><w:t>${esc(cell)}</w:t></w:r></w:p></w:tc>`
+          `<w:tr>${row.map((cell, ci) =>
+            `<w:tc><w:p>${renderCell(cell, ci === 0)}</w:p></w:tc>`
           ).join('')}</w:tr>`
         ).join('');
 
@@ -1513,7 +1758,15 @@ function generateDocx(ast, inputPath, theme) {
   zip.addFile('word/document.xml', document);
   zip.addFile('word/_rels/document.xml.rels', relsXml);
   zip.addFile('word/styles.xml', resolveDocxStylesXml(theme));
-  zip.addFile('word/numbering.xml', buildDocxNumbering(listInstances));
+  // If the template provided a numbering.xml, merge it with our list-only
+  // additions so the template's heading auto-numbering is preserved alongside
+  // markdown's bullet/ordered lists. Otherwise build a fresh numbering.xml.
+  if (theme.rawNumberingXml) {
+    const { xml: mergedNumberingXml } = mergeDocxNumbering(listInstances, theme.rawNumberingXml);
+    zip.addFile('word/numbering.xml', mergedNumberingXml);
+  } else {
+    zip.addFile('word/numbering.xml', buildDocxNumbering(listInstances));
+  }
   zip.addFile('word/theme/theme1.xml', buildThemeXml(theme));
   for (const hf of hfFiles) {
     zip.addFile(`word/${hf.target}`, hf.content);

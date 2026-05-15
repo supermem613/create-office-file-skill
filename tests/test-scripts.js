@@ -522,7 +522,7 @@ describe('DOCX — Template styles extraction', () => {
     }
   });
 
-  it('numPr is stripped from template heading styles', () => {
+  it('preserves numPr on template heading styles for auto-numbering', () => {
     const templatePath = join(__dirname, '_test_tpl2.docx');
     try {
       const { deflateRawSync } = require('zlib');
@@ -533,11 +533,18 @@ describe('DOCX — Template styles extraction', () => {
         let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
       }
       const theme = '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="T"><a:themeElements><a:clrScheme name="T"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="444444"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="T"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="T"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
-      // Styles with numPr on Heading1 — should be stripped
-      const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style></w:styles>';
-      const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>';
+      // Styles with numPr on Heading1 (template heading auto-numbering) AND
+      // numPr on a non-heading style. Heading1 numPr must be preserved so
+      // Word renders the template's "1", "1.1", ... numbering. Non-heading
+      // style numPr must still be stripped so it cannot collide with the
+      // markdown driver's paragraph-level list numPr.
+      const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="MyList"><w:name w:val="My List"/><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr></w:style></w:styles>';
+      // Minimal numbering.xml with one num/abstractNum so the template-heading
+      // detection has something to bind to.
+      const numberingXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="0"/></w:num></w:numbering>';
+      const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>';
       const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
-      const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>';
+      const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>';
       const doc = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>';
       const files = [
         { name: '[Content_Types].xml', data: Buffer.from(ct) },
@@ -545,6 +552,7 @@ describe('DOCX — Template styles extraction', () => {
         { name: 'word/document.xml', data: Buffer.from(doc) },
         { name: 'word/_rels/document.xml.rels', data: Buffer.from(docRels) },
         { name: 'word/styles.xml', data: Buffer.from(stylesXml) },
+        { name: 'word/numbering.xml', data: Buffer.from(numberingXml) },
         { name: 'word/theme/theme1.xml', data: Buffer.from(theme) },
       ];
       const locals = [], centrals = [];
@@ -577,8 +585,16 @@ describe('DOCX — Template styles extraction', () => {
 
       const buf = generateWithTemplate('# Hello', 'docx', templatePath);
       const styles = zipExtract(buf, 'word/styles.xml');
-      assert.ok(!styles.includes('<w:numPr>'), 'numPr should be stripped from heading styles');
-      assert.ok(styles.includes('outlineLvl'), 'Other pPr content should be preserved');
+      // Heading1 keeps its numPr so Word auto-numbers headings via the template scheme.
+      const heading1 = styles.match(/<w:style[^>]*w:styleId="Heading1"[^>]*>[\s\S]*?<\/w:style>/);
+      assert.ok(heading1, 'Heading1 style block should be present');
+      assert.ok(heading1[0].includes('<w:numPr>'), 'Heading1 numPr should be preserved');
+      assert.ok(heading1[0].includes('outlineLvl'), 'Heading1 outlineLvl should still be present');
+      // Non-heading style still has its numPr stripped to avoid colliding
+      // with the markdown driver's paragraph-level list numPr.
+      const myList = styles.match(/<w:style[^>]*w:styleId="MyList"[^>]*>[\s\S]*?<\/w:style>/);
+      assert.ok(myList, 'MyList style block should be present');
+      assert.ok(!myList[0].includes('<w:numPr>'), 'numPr should be stripped from non-heading styles');
     } finally {
       try { require('fs').unlinkSync(templatePath); } catch {}
     }
@@ -1359,5 +1375,309 @@ describe('--save-template — portable bundle round-trip', () => {
       try { require('fs').unlinkSync(src); } catch {}
       try { require('fs').unlinkSync(bundle); } catch {}
     }
+  });
+});
+
+
+// ============================================================================
+// 19. Template heading auto-numbering (default behavior)
+// ============================================================================
+
+// Build a minimal template that has heading auto-numbering wired up the same
+// way real Word templates do: Heading1..Heading3 styles bind to a multilevel
+// abstractNum via numId. When such a template is provided, the script should
+// preserve the heading numPr, merge the template numbering with markdown
+// list numbering at offset numIds, promote heading levels by one, and strip
+// any leading "1.", "1.1", ... numeric prefix from heading text.
+function buildHeadingNumberingTemplate(filePath) {
+  const { deflateRawSync } = require('zlib');
+  function crc(buf) {
+    if (typeof buf === 'string') buf = Buffer.from(buf, 'utf8');
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+    let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  const themeXml = '<?xml version="1.0"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="HN"><a:themeElements><a:clrScheme name="HN"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="222222"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="111111"/></a:accent1><a:accent2><a:srgbClr val="222222"/></a:accent2><a:accent3><a:srgbClr val="333333"/></a:accent3><a:accent4><a:srgbClr val="444444"/></a:accent4><a:accent5><a:srgbClr val="555555"/></a:accent5><a:accent6><a:srgbClr val="666666"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="HN"><a:majorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="HN"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+  const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:sz w:val="56"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:pPr><w:numPr><w:ilvl w:val="2"/><w:numId w:val="1"/></w:numPr><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style></w:styles>';
+  const numberingXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading1"/><w:lvlText w:val="%1"/><w:lvlJc w:val="left"/></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading2"/><w:lvlText w:val="%1.%2"/><w:lvlJc w:val="left"/></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading3"/><w:lvlText w:val="%1.%2.%3"/><w:lvlJc w:val="left"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>';
+  const ct = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>';
+  const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+  const docRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>';
+  const doc = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>';
+  const files = [
+    { name: '[Content_Types].xml', data: Buffer.from(ct) },
+    { name: '_rels/.rels', data: Buffer.from(rootRels) },
+    { name: 'word/document.xml', data: Buffer.from(doc) },
+    { name: 'word/_rels/document.xml.rels', data: Buffer.from(docRels) },
+    { name: 'word/styles.xml', data: Buffer.from(stylesXml) },
+    { name: 'word/numbering.xml', data: Buffer.from(numberingXml) },
+    { name: 'word/theme/theme1.xml', data: Buffer.from(themeXml) },
+  ];
+  const locals = [], centrals = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name);
+    const comp = deflateRawSync(f.data);
+    const use = comp.length < f.data.length;
+    const stored = use ? comp : f.data;
+    const method = use ? 8 : 0;
+    const c = crc(f.data);
+    const local = Buffer.alloc(30 + nameBuf.length);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(c, 14); local.writeUInt32LE(stored.length, 18); local.writeUInt32LE(f.data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26); nameBuf.copy(local, 30);
+    locals.push(local, stored);
+    const central = Buffer.alloc(46 + nameBuf.length);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(method, 10); central.writeUInt32LE(c, 16);
+    central.writeUInt32LE(stored.length, 20); central.writeUInt32LE(f.data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28); central.writeUInt32LE(offset, 42);
+    nameBuf.copy(central, 46); centrals.push(central);
+    offset += local.length + stored.length;
+  }
+  const cdSz = centrals.reduce((s, b) => s + b.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdSz, 12); eocd.writeUInt32LE(offset, 16);
+  require('fs').writeFileSync(filePath, Buffer.concat([...locals, ...centrals, eocd]));
+}
+
+describe('Template heading auto-numbering', () => {
+  it('preserves template numbering.xml and merges script lists at offset numIds', () => {
+    const src = join(__dirname, '_test_hn_src.docx');
+    try {
+      buildHeadingNumberingTemplate(src);
+      const md = '# Doc Title\n\n## Section A\n\n- bullet one\n- bullet two\n\n## Section B\n\nText.\n';
+      const buf = generateWithTemplate(md, 'docx', src);
+      const numbering = zipExtract(buf, 'word/numbering.xml');
+      // Template's numId 1 must be preserved.
+      assert.ok(/<w:num\b[^>]*w:numId="1"/.test(numbering), 'template numId=1 must be kept');
+      // Template's heading-bound abstractNum 0 must be preserved.
+      assert.ok(/<w:abstractNum\b[^>]*w:abstractNumId="0"[^>]*>[\s\S]*?<w:pStyle w:val="Heading1"/.test(numbering), 'template abstractNum 0 with Heading1 binding must be kept');
+      // Script's bullet/ordered abstractNums must be appended at offset > 0.
+      assert.ok(/<w:abstractNum\b[^>]*w:abstractNumId="[1-9]\d*"[^>]*>[\s\S]*?<w:numFmt w:val="bullet"/.test(numbering), 'script bullet abstractNum must be appended');
+      // The bullet list in document.xml must reference an offset numId (>1).
+      const docXml = zipExtract(buf, 'word/document.xml');
+      const listNumIds = [...docXml.matchAll(/<w:numId\s+w:val="(\d+)"\s*\/?>/g)].map(m => parseInt(m[1], 10));
+      assert.ok(listNumIds.length > 0, 'document body should reference at least one list numId');
+      assert.ok(listNumIds.every(n => n > 1), `script list numIds must be offset beyond template max (1); got ${JSON.stringify(listNumIds)}`);
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+    }
+  });
+
+  it('promotes heading levels by one when template has heading numbering', () => {
+    const src = join(__dirname, '_test_hn_src2.docx');
+    try {
+      buildHeadingNumberingTemplate(src);
+      // First # is Title, ## should become Heading1, ### should become Heading2.
+      const md = '# My Title\n\n## Section\n\n### Subsection\n';
+      const buf = generateWithTemplate(md, 'docx', src);
+      const docXml = zipExtract(buf, 'word/document.xml');
+      // First # → Title.
+      assert.ok(/<w:pStyle w:val="Title"\/>[\s\S]*?<w:t[^>]*>My Title<\/w:t>/.test(docXml), 'first # should map to Title');
+      // ## → Heading1 (promoted from Heading2 because template has heading numbering).
+      assert.ok(/<w:pStyle w:val="Heading1"\/>[\s\S]*?<w:t[^>]*>Section<\/w:t>/.test(docXml), '## should map to Heading1');
+      // ### → Heading2.
+      assert.ok(/<w:pStyle w:val="Heading2"\/>[\s\S]*?<w:t[^>]*>Subsection<\/w:t>/.test(docXml), '### should map to Heading2');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+    }
+  });
+
+  it('strips leading "1.", "1.1", ... numeric prefix from heading text', () => {
+    const src = join(__dirname, '_test_hn_src3.docx');
+    try {
+      buildHeadingNumberingTemplate(src);
+      const md = '# Doc\n\n## 1. Today\n\n### 1.1 Subhead\n\n## 2. Tomorrow\n';
+      const buf = generateWithTemplate(md, 'docx', src);
+      const docXml = zipExtract(buf, 'word/document.xml');
+      // The "1.", "1.1", "2." prefixes must be stripped because Word renders
+      // them via the template's auto-numbering.
+      assert.ok(/<w:t[^>]*>Today<\/w:t>/.test(docXml), 'heading should have prefix stripped: Today');
+      assert.ok(/<w:t[^>]*>Subhead<\/w:t>/.test(docXml), 'heading should have prefix stripped: Subhead');
+      assert.ok(/<w:t[^>]*>Tomorrow<\/w:t>/.test(docXml), 'heading should have prefix stripped: Tomorrow');
+      assert.ok(!/<w:t[^>]*>1\. Today<\/w:t>/.test(docXml), 'leading "1." should not survive in heading text');
+      assert.ok(!/<w:t[^>]*>1\.1 Subhead<\/w:t>/.test(docXml), 'leading "1.1" should not survive in heading text');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+    }
+  });
+
+  it('falls back to script-built numbering when template has no numbering.xml', () => {
+    // The existing rich-template fixture has styles + theme + header + footer
+    // but NO numbering.xml. The output should use script-built numbering and
+    // markdown headings should NOT be promoted (## stays Heading2).
+    const src = join(__dirname, '_test_hn_src4.docx');
+    try {
+      buildRichDocxTemplate(src);
+      const md = '# Title\n\n## Subhead\n';
+      const buf = generateWithTemplate(md, 'docx', src);
+      const docXml = zipExtract(buf, 'word/document.xml');
+      assert.ok(/<w:pStyle w:val="Heading2"\/>[\s\S]*?<w:t[^>]*>Subhead<\/w:t>/.test(docXml), '## should map to Heading2 when template has no heading numbering');
+      const numbering = zipExtract(buf, 'word/numbering.xml');
+      // Script's own numbering base names should be there.
+      assert.ok(/<w:abstractNum\b[^>]*w:abstractNumId="0"[^>]*>[\s\S]*?<w:numFmt w:val="bullet"/.test(numbering), 'script default bullet abstractNum at id=0 must be present');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+    }
+  });
+
+  it('save-template bundle preserves the templates numbering.xml', () => {
+    const src = join(__dirname, '_test_hn_src5.docx');
+    const bundle = join(__dirname, '_test_hn_bundle.docx');
+    try {
+      buildHeadingNumberingTemplate(src);
+      const result = run(`--template "${src}" --save-template "${bundle}"`);
+      assert.strictEqual(result.exitCode, 0, `save-template should succeed (stderr: ${result.stderr})`);
+      const buf = readFileSync(bundle);
+      const entries = zipEntries(buf);
+      assert.ok(entries.includes('word/numbering.xml'), 'bundle should carry numbering.xml when source has heading numbering');
+      const numbering = zipExtract(buf, 'word/numbering.xml');
+      assert.ok(/<w:pStyle w:val="Heading1"/.test(numbering), 'bundle numbering should keep Heading1 binding');
+      // And the bundle is consumable: round-trip a doc and confirm headings still get auto-numbered.
+      const out = generateWithTemplate('# T\n\n## Step\n', 'docx', bundle);
+      const styles = zipExtract(out, 'word/styles.xml');
+      const heading1 = styles.match(/<w:style[^>]*w:styleId="Heading1"[^>]*>[\s\S]*?<\/w:style>/);
+      assert.ok(heading1 && heading1[0].includes('<w:numPr>'), 'round-tripped bundle must keep Heading1 numPr');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+      try { require('fs').unlinkSync(bundle); } catch {}
+    }
+  });
+});
+
+// ============================================================================
+// 20. OLE-wrapped (MIP-encrypted) template gives a clear error
+// ============================================================================
+describe('OLE-wrapped template error', () => {
+  it('surfaces a clear MIP/sensitivity-label error instead of a generic ZIP error', () => {
+    const src = join(__dirname, '_test_ole.docx');
+    try {
+      // Write a fake OLE compound file (just the magic + padding) so the
+      // ZipReader would otherwise fail with "EOCD not found".
+      const ole = Buffer.alloc(512);
+      Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]).copy(ole, 0);
+      require('fs').writeFileSync(src, ole);
+      const out = join(__dirname, '_test_ole_out.docx');
+      const result = run(`-o "${out}" --template "${src}"`, '# Hello');
+      assert.notStrictEqual(result.exitCode, 0, 'should fail on OLE-wrapped template');
+      assert.ok(/Microsoft Information Protection|sensitivity label|OLE-wrapped/i.test(result.stderr), `expected MIP/OLE error, got: ${result.stderr}`);
+      assert.ok(!/EOCD not found/i.test(result.stderr), 'should NOT surface raw EOCD error');
+    } finally {
+      try { require('fs').unlinkSync(src); } catch {}
+      try { require('fs').unlinkSync(join(__dirname, '_test_ole_out.docx')); } catch {}
+    }
+  });
+});
+
+
+// ============================================================================
+// 21. Table cells preserve inline markdown formatting
+// ============================================================================
+describe('Table cell inline formatting', () => {
+  it('renders `code` spans inside DOCX table cells via the code font', () => {
+    const buf = generate('| Field | Notes |\n|---|---|\n| `userTenantId` | platform field |\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    // The `code` cell must use the code font (Consolas by default), not a
+    // literal "`code`" text node.
+    assert.ok(/<w:t[^>]*>userTenantId<\/w:t>/.test(doc), 'code span text must be present');
+    assert.ok(!/<w:t[^>]*>`userTenantId`<\/w:t>/.test(doc), 'backticks must not survive as literal text');
+    assert.ok(/w:ascii="Consolas"[\s\S]{0,200}<w:t[^>]*>userTenantId<\/w:t>/.test(doc), 'code-font run must wrap the code span text');
+  });
+
+  it('renders **bold** and *italic* spans inside DOCX table cells', () => {
+    const buf = generate('| Term | Meaning |\n|---|---|\n| **alpha** | *beta* |\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(/<w:b\/>[\s\S]{0,80}<w:t[^>]*>alpha<\/w:t>/.test(doc), 'bold span must wrap "alpha"');
+    assert.ok(/<w:i\/>[\s\S]{0,80}<w:t[^>]*>beta<\/w:t>/.test(doc), 'italic span must wrap "beta"');
+    assert.ok(!/\*\*alpha\*\*/.test(doc), 'asterisks must not survive in body text');
+  });
+
+  it('keeps DOCX table header row cells bold even when cells have inline formatting', () => {
+    const buf = generate('| `id` | name |\n|---|---|\n| `a` | b |\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    // Find the header row (first <w:tr>) and assert both header cells contain
+    // <w:b/> in their first run's <w:rPr>.
+    const trMatch = doc.match(/<w:tr>[\s\S]*?<\/w:tr>/);
+    assert.ok(trMatch, 'expected at least one <w:tr>');
+    const header = trMatch[0];
+    const idCellHasBold = /<w:rPr>(?=[^<]*<w:b\/>)[\s\S]*?<\/w:rPr>[\s\S]*?<w:t[^>]*>id<\/w:t>/.test(header)
+      || /<w:b\/>[\s\S]{0,200}<w:t[^>]*>id<\/w:t>/.test(header);
+    const nameCellHasBold = /<w:b\/>[\s\S]{0,200}<w:t[^>]*>name<\/w:t>/.test(header);
+    assert.ok(idCellHasBold, 'header cell with inline `code` must still be bold');
+    assert.ok(nameCellHasBold, 'plain header cell must still be bold');
+  });
+
+  it('does not bold non-first-column DOCX data row cells', () => {
+    const buf = generate('| H1 | H2 |\n|---|---|\n| label | body |\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    const trs = [...doc.matchAll(/<w:tr>[\s\S]*?<\/w:tr>/g)].map(m => m[0]);
+    assert.ok(trs.length >= 2, 'expected at least one data row');
+    const cells = [...trs[1].matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map(m => m[0]);
+    assert.ok(cells.length >= 2, 'expected two cells in data row');
+    // Inspect the SECOND cell only to avoid matching bold runs in the
+    // adjacent first cell (which is intentionally bolded).
+    const secondCell = cells[1];
+    assert.ok(/<w:t[^>]*>body<\/w:t>/.test(secondCell), 'second cell should contain "body"');
+    assert.ok(!/<w:b\/>/.test(secondCell), 'second-column cell must not contain any bold run');
+  });
+
+  it('bolds first-column DOCX data row cells (Grid Table 4 - Accent 1 parity)', () => {
+    const buf = generate('| H1 | H2 |\n|---|---|\n| label | body |\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    const trs = [...doc.matchAll(/<w:tr>[\s\S]*?<\/w:tr>/g)].map(m => m[0]);
+    assert.ok(trs.length >= 2, 'expected at least one data row');
+    const cells = [...trs[1].matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map(m => m[0]);
+    assert.ok(cells.length >= 2, 'expected two cells in data row');
+    const firstCell = cells[0];
+    assert.ok(/<w:b\/>[\s\S]{0,80}<w:t[^>]*>label<\/w:t>/.test(firstCell), 'first-column cell text must be bold');
+  });
+
+  it('flattens cells to plain text in PPTX tables (inline formatting is a known PPTX gap)', () => {
+    const buf = generate('## Slide\n\n| `id` | name |\n|---|---|\n| `a` | b |\n', 'pptx');
+    const slide = zipExtract(buf, 'ppt/slides/slide1.xml');
+    // PPTX path strips inline formatting; only the text content survives.
+    assert.ok(/<a:t>id<\/a:t>/.test(slide), 'PPTX cell text must contain the unwrapped text');
+    assert.ok(!/<a:t>`id`<\/a:t>/.test(slide), 'backticks must not appear as literal text');
+  });
+});
+
+
+// ============================================================================
+// 22. List paragraphs carry built-in ListBullet / ListNumber pStyle
+// ============================================================================
+describe('List paragraph styles', () => {
+  it('bullet list paragraphs carry pStyle="ListBullet"', () => {
+    const buf = generate('- one\n- two\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(/<w:pStyle\s+w:val="ListBullet"\/>/.test(doc), 'bullet items must reference ListBullet style');
+  });
+
+  it('ordered list paragraphs carry pStyle="ListNumber"', () => {
+    const buf = generate('1. one\n2. two\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(/<w:pStyle\s+w:val="ListNumber"\/>/.test(doc), 'ordered items must reference ListNumber style');
+  });
+
+  it('nested bullet uses ListBullet2 pStyle', () => {
+    const buf = generate('- one\n  - nested\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    assert.ok(/<w:pStyle\s+w:val="ListBullet2"\/>/.test(doc), 'nested bullets must reference ListBullet2');
+  });
+
+  it('styles.xml defines ListBullet and ListNumber so Word reports correct style names', () => {
+    const buf = generate('- one\n', 'docx');
+    const styles = zipExtract(buf, 'word/styles.xml');
+    assert.ok(/w:styleId="ListBullet"/.test(styles), 'ListBullet style must be defined');
+    assert.ok(/w:styleId="ListNumber"/.test(styles), 'ListNumber style must be defined');
+  });
+
+  it('list paragraphs keep paragraph-level numPr so separate lists restart from 1', () => {
+    const buf = generate('- a\n- b\n\nText.\n\n- c\n', 'docx');
+    const doc = zipExtract(buf, 'word/document.xml');
+    // Two separate bullet lists must use two distinct numIds (paragraph-level).
+    const numIds = [...new Set([...doc.matchAll(/<w:numId\s+w:val="(\d+)"/g)].map(m => m[1]))];
+    assert.ok(numIds.length >= 2, `expected at least 2 distinct numIds, got ${numIds.join(',')}`);
   });
 });

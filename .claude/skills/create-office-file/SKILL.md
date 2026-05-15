@@ -28,12 +28,27 @@ node $SKILL_DIR/scripts/create-office-file.mjs -i input.md -o output.pptx --temp
 The `--template` (`-t`) option extracts theme colors (12 OOXML scheme colors) and fonts (major/minor) from the provided `.pptx` or `.docx` file and applies them to the output. Cross-format works: a `.pptx` template can style a `.docx` output and vice versa.
 
 When a `.docx` template is provided, the script also extracts:
-- **Full styles.xml** — heading styles, title style, font defaults, and spacing are faithfully reproduced (style-level `numPr` is stripped to avoid double-numbering since markdown headings already contain their numbering text)
+- **Full styles.xml** — heading styles, title style, font defaults, and spacing are faithfully reproduced
 - **Headers and footers** — `header1.xml`, `footer1.xml`, etc. are carried over with correct `sectPr` references, so page numbers and classification labels appear in the output
+- **Numbering.xml** — preserved when the template binds heading styles to a multilevel list; markdown lists are merged in at offset numIds so they never collide with template-defined numbering
+
+#### Heading auto-numbering (default)
+
+When the template's `Heading1`..`HeadingN` styles bind to a multilevel `numId` (the typical "1.", "1.1", "1.1.1" pattern in corporate Word templates), the script preserves that wiring and lets Word render the numbers:
+
+- The `numPr` references on heading styles are kept (instead of being stripped).
+- Markdown heading levels are promoted by one so `##` maps to `Heading1`, `###` to `Heading2`, etc. The first `#` still becomes `Title`. This matches the convention where the document title is `# Title` and the first numbered section is `## 1. Foo`.
+- Any leading numeric prefix in the markdown heading text (e.g. `## 1. Foo`, `### 1.2 Bar`, `#### 1.2.3. Baz`) is stripped automatically so the template's auto-numbering is the only thing the reader sees.
+
+If the template has no heading-bound numbering, the previous behavior applies: `numPr` is stripped from styles and markdown headings keep their literal text.
+
+#### Sensitivity-labeled templates
+
+Templates protected with a Microsoft Information Protection (MIP) sensitivity label are stored as OLE compound files and cannot be read as ZIPs. The script detects this and surfaces a clear, actionable error rather than a generic "EOCD not found". Workarounds: open the template in Word, use `File > Info > Sensitivity` to remove the label and save a copy, then point `--template` at the unlabeled copy. Alternatively, `--save-template` against an unlabeled copy produces a portable bundle you can reuse.
 
 ### Saving a Portable Template Bundle
 
-Some templates are encrypted (Microsoft Information Protection labels), live on a remote drive, or are content-heavy `.dotx`/`.docx` sources you would rather not redistribute. The `--save-template` flag extracts only the parts the script actually consumes (theme, styles, headers, footers, sectPr) and packages them into a small, portable `.docx` bundle:
+Some templates are encrypted (Microsoft Information Protection labels), live on a remote drive, or are content-heavy `.dotx`/`.docx` sources you would rather not redistribute. The `--save-template` flag extracts only the parts the script actually consumes (theme, styles, numbering, headers, footers, sectPr) and packages them into a small, portable `.docx` bundle:
 
 ```bash
 node $SKILL_DIR/scripts/create-office-file.mjs --template corporate.dotx --save-template corporate-bundle.docx
