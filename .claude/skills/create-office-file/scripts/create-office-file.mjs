@@ -543,6 +543,33 @@ function extractThemeFromTemplate(templatePath) {
       overrides.templateHasHeadingNumbering = true;
     }
   }
+  // Extract settings.xml, fontTable.xml, and webSettings.xml from the template
+  // as raw bytes. Word's heading auto-numbering depends on settings.xml's
+  // compatibility flags to resolve multilevel pStyle bindings correctly. Without
+  // settings.xml, Word falls back to defaults that can render heading numbering
+  // as bullet glyphs from an unrelated abstractNum instead of the template's
+  // decimal multilevel scheme. fontTable.xml and webSettings.xml are paired so
+  // font references and view defaults stay consistent.
+  //
+  // settings.xml in the source template typically includes <w:endnotePr> and
+  // <w:footnotePr> blocks that reference notes living in footnotes.xml and
+  // endnotes.xml. The script does not carry those notes parts across, so the
+  // references would dangle and Word would refuse to open the file. Strip the
+  // two blocks at extract time so the surviving settings.xml is self-contained.
+  for (const part of ['word/settings.xml', 'word/fontTable.xml', 'word/webSettings.xml']) {
+    const data = zip.getFile(part);
+    if (!data) continue;
+    let payload = data;
+    if (part === 'word/settings.xml') {
+      const xml = data.toString('utf8');
+      const stripped = xml
+        .replace(/<w:footnotePr>[\s\S]*?<\/w:footnotePr>/g, '')
+        .replace(/<w:endnotePr>[\s\S]*?<\/w:endnotePr>/g, '');
+      payload = Buffer.from(stripped, 'utf8');
+    }
+    overrides.rawTemplateParts = overrides.rawTemplateParts || {};
+    overrides.rawTemplateParts[part] = payload;
+  }
   // Extract headers and footers from DOCX templates
   const headerFooterFiles = [];
   const rels = zip.getFile('word/_rels/document.xml.rels');
@@ -577,6 +604,7 @@ function mergeTheme(base, overrides) {
     fonts: { ...base.fonts, ...(overrides.fonts || {}) },
     rawStylesXml: overrides.rawStylesXml || null,
     rawNumberingXml: overrides.rawNumberingXml || null,
+    rawTemplateParts: overrides.rawTemplateParts || null,
     headingNumIds: overrides.headingNumIds || [],
     templateHasHeadingNumbering: !!overrides.templateHasHeadingNumbering,
     headerFooterFiles: overrides.headerFooterFiles || [],
@@ -1322,7 +1350,25 @@ function generatePptx(ast, inputPath, theme) {
 // DOCX Generator (WordprocessingML with hard-coded templates)
 // ============================================================================
 
-function docxContentTypes(imageExts, headerFooterFiles) {
+const RAW_TEMPLATE_PART_INFO = {
+  'word/settings.xml': {
+    contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml',
+    relType: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings',
+    target: 'settings.xml',
+  },
+  'word/fontTable.xml': {
+    contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml',
+    relType: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable',
+    target: 'fontTable.xml',
+  },
+  'word/webSettings.xml': {
+    contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml',
+    relType: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings',
+    target: 'webSettings.xml',
+  },
+};
+
+function docxContentTypes(imageExts, headerFooterFiles, rawTemplateParts) {
   let imgDefaults = '';
   for (const ext of imageExts) {
     const ct = IMAGE_CONTENT_TYPES['.' + ext];
@@ -1335,6 +1381,14 @@ function docxContentTypes(imageExts, headerFooterFiles) {
       : 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml';
     hfOverrides += `  <Override PartName="/word/${hf.target}" ContentType="${ct}"/>\n`;
   }
+  let rawOverrides = '';
+  if (rawTemplateParts) {
+    for (const part of Object.keys(rawTemplateParts)) {
+      const info = RAW_TEMPLATE_PART_INFO[part];
+      if (!info) continue;
+      rawOverrides += `  <Override PartName="/${part}" ContentType="${info.contentType}"/>\n`;
+    }
+  }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -1343,7 +1397,7 @@ ${imgDefaults}  <Override PartName="/word/document.xml" ContentType="application
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
   <Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
-${hfOverrides}</Types>`;
+${rawOverrides}${hfOverrides}</Types>`;
 }
 
 const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1351,11 +1405,18 @@ const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
 
-function docxDocumentRels(hyperlinks, images, headerFooterFiles) {
+function docxDocumentRels(hyperlinks, images, headerFooterFiles, rawTemplateParts) {
   let rels = `  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>`;
   let nextId = 4;
+  if (rawTemplateParts) {
+    for (const part of Object.keys(rawTemplateParts)) {
+      const info = RAW_TEMPLATE_PART_INFO[part];
+      if (!info) continue;
+      rels += `\n  <Relationship Id="rId${nextId++}" Type="${info.relType}" Target="${info.target}"/>`;
+    }
+  }
   // Header/footer relationships — assign new rIds and record mapping
   const hfRIdMap = {}; // old rId → new rId
   for (const hf of (headerFooterFiles || [])) {
@@ -1491,11 +1552,39 @@ function mergeDocxNumbering(listInstances, templateNumberingXml) {
     scriptNums += `\n  <w:num w:numId="${numId}"><w:abstractNumId w:val="${absId}"/>${restart}</w:num>`;
   }
 
-  // Inject the new abstractNums and nums just before </w:numbering>.
-  const merged = templateNumberingXml.replace(
+  // Inject the new abstractNums after the template's last <w:abstractNum> so
+  // schema ordering (numPicBullet*, abstractNum*, num*) stays valid. Inject the
+  // new <w:num> entries before </w:numbering>. Word can mis-resolve numbering
+  // when this order is violated, including silently swapping a multilevel
+  // heading abstractNum for an unrelated bullet abstractNum at render time.
+  const lastAbsCloseRe = /<\/w:abstractNum>(?![\s\S]*<\/w:abstractNum>)/;
+  let merged;
+  if (lastAbsCloseRe.test(templateNumberingXml)) {
+    merged = templateNumberingXml.replace(
+      lastAbsCloseRe,
+      `</w:abstractNum>\n${bulletAbsXml}\n${orderedAbsXml}`,
+    );
+  } else {
+    merged = templateNumberingXml.replace(
+      /<w:numbering\b[^>]*>/,
+      (match) => `${match}\n${bulletAbsXml}\n${orderedAbsXml}`,
+    );
+  }
+  merged = merged.replace(
     /<\/w:numbering>\s*$/,
-    `\n${bulletAbsXml}\n${orderedAbsXml}${scriptNums}\n</w:numbering>`,
+    `${scriptNums}\n</w:numbering>`,
   );
+  // <w:numIdMacAtCleanup/> must be the final child of <w:numbering>. If the
+  // template includes it, the script-added <w:num> entries need to slide in
+  // before it; otherwise leaving them after breaks schema ordering and Word
+  // can fail to honor the late numbering definitions.
+  const macCleanupRe = /(<w:numIdMacAtCleanup\b[^/]*\/>)([\s\S]*?<\/w:numbering>)/;
+  if (macCleanupRe.test(merged)) {
+    merged = merged.replace(macCleanupRe, (_match, cleanup, tail) => {
+      const moved = tail.replace(/(<\/w:numbering>\s*$)/, `${cleanup}$1`);
+      return moved;
+    });
+  }
 
   // Return the offset so callers can rewrite document.xml numId references.
   const remapNumId = (scriptOneBasedIndex) => numIdOffset + scriptOneBasedIndex;
@@ -1721,7 +1810,7 @@ function generateDocx(ast, inputPath, theme) {
   for (const img of images) imageExts.add(img.name.split('.').pop());
 
   // Build document.xml.rels (returns xml, hfRIdMap, nextId)
-  const { xml: relsXml, hfRIdMap } = docxDocumentRels(links, images, hfFiles);
+  const { xml: relsXml, hfRIdMap } = docxDocumentRels(links, images, hfFiles, theme.rawTemplateParts);
 
   // Build sectPr — use template's if available, remapping header/footer rIds
   let sectPr;
@@ -1753,7 +1842,7 @@ function generateDocx(ast, inputPath, theme) {
 </w:document>`;
 
   const zip = new ZipWriter();
-  zip.addFile('[Content_Types].xml', docxContentTypes(imageExts, hfFiles));
+  zip.addFile('[Content_Types].xml', docxContentTypes(imageExts, hfFiles, theme.rawTemplateParts));
   zip.addFile('_rels/.rels', DOCX_ROOT_RELS);
   zip.addFile('word/document.xml', document);
   zip.addFile('word/_rels/document.xml.rels', relsXml);
@@ -1768,6 +1857,17 @@ function generateDocx(ast, inputPath, theme) {
     zip.addFile('word/numbering.xml', buildDocxNumbering(listInstances));
   }
   zip.addFile('word/theme/theme1.xml', buildThemeXml(theme));
+  // Carry over settings.xml, fontTable.xml, and webSettings.xml when the
+  // template provides them. settings.xml in particular controls the Word
+  // compatibility mode that decides how multilevel pStyle bindings on heading
+  // styles resolve. Without it, Word can render heading auto-numbering as
+  // bullet glyphs from an unrelated abstractNum instead of the template's
+  // intended decimal scheme.
+  if (theme.rawTemplateParts) {
+    for (const [partName, content] of Object.entries(theme.rawTemplateParts)) {
+      zip.addFile(partName, content);
+    }
+  }
   for (const hf of hfFiles) {
     zip.addFile(`word/${hf.target}`, hf.content);
   }
